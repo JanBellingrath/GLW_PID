@@ -37,12 +37,12 @@ GLW_PID/
 │       ├── synthetic_data.py  # Boolean function synthesis for validation
 │       ├── cluster_visualization_validation.py  # Cluster validation tools
 │       ├── utils.py           # Utility functions and configurations
+│       ├── cluster_optimization_gpu_v2.py  # GPU-optimized clustering
+│       ├── losses_and_weights_GLW_training.py  # Training loss implementations
+│       ├── sweep_pid_discrim.py  # Hyperparameter sweeps for discriminators
 │       ├── domain_v_config.json  # Visual domain configuration
 │       └── domain_t_config.json  # Text domain configuration
 ├── analyze_pid_new.py         # Legacy PID analysis script
-├── cluster_optimization_gpu_v2.py  # GPU-optimized clustering
-├── losses_and_weights_GLW_training.py  # Training loss implementations
-├── sweep_pid_discrim.py       # Hyperparameter sweeps for discriminators
 └── run_pid_analysis.py        # Quick analysis launcher
 ```
 

@@ -9,6 +9,12 @@ from datetime import datetime
 from typing import Dict, List, Mapping, Optional, Tuple, Any, Union
 from collections import defaultdict
 
+# Add path setup for shimmer imports
+import sys
+shimmer_ssd_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'shimmer-ssd'))
+if shimmer_ssd_root not in sys.path:
+    sys.path.insert(0, shimmer_ssd_root)
+
 from shimmer.modules.domain import DomainModule
 from shimmer.modules.gw_module import GWModule, GWEncoder, GWDecoder, LatentsDomainGroupT
 from shimmer.modules.selection import RandomSelection

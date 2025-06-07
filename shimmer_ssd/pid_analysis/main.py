@@ -20,18 +20,23 @@ root_dir = os.path.abspath(os.path.dirname(__file__))
 if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
 
+# Add the shimmer-ssd directory to the path for shimmer_ssd imports
+shimmer_ssd_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..', 'shimmer-ssd'))
+if shimmer_ssd_root not in sys.path:
+    sys.path.insert(0, shimmer_ssd_root)
+
 # Import from eval.py since analysis.py doesn't exist
-from shimmer_ssd.pid_analysis.eval import (
+from .eval import (
     analyze_model,
     analyze_multiple_models,
     analyze_multiple_models_from_list,
     analyze_with_data_interface
 )
 
-from shimmer_ssd.pid_analysis.data_interface import create_synthetic_interface, create_data_interface
+from .data_interface import create_synthetic_interface, create_data_interface
 
 # Import utility functions
-from shimmer_ssd.pid_analysis.utils import load_domain_modules, find_latest_model_checkpoints
+from .utils import load_domain_modules, find_latest_model_checkpoints
 
 # Try to import wandb, but make it optional
 try:
@@ -43,7 +48,7 @@ except ImportError:
 
 # Import cluster validation module for professional cluster validation
 try:
-    from shimmer_ssd.pid_analysis.cluster_visualization_validation import (
+    from .cluster_visualization_validation import (
         run_cluster_validation_from_results
     )
     HAS_CLUSTER_VALIDATION = True
@@ -106,7 +111,7 @@ def load_or_generate_synthetic_labels(
     print(f"   Method: {cluster_method}, Clusters: {num_clusters}")
     
     # Import here to avoid dependency if not used
-    from shimmer_ssd.pid_analysis.synthetic_data import create_synthetic_labels_with_model
+    from .synthetic_data import create_synthetic_labels_with_model
     
     synthetic_labels, clustering_model = create_synthetic_labels_with_model(
         data=target_data,
@@ -406,8 +411,8 @@ def main():
         print("="*60 + "\n")
         
         # Create synthetic data interface with noise
-        from shimmer_ssd.pid_analysis.data_interface import SyntheticDataProvider, GeneralizedDataInterface
-        from shimmer_ssd.pid_analysis.synthetic_data import get_theoretical_pid_values
+        from .data_interface import SyntheticDataProvider, GeneralizedDataInterface
+        from .synthetic_data import get_theoretical_pid_values
         
         # Set up source configuration for Boolean analysis
         source_config = {"domain_a": "input_a", "domain_b": "input_b"}
@@ -646,7 +651,7 @@ def main():
                 from simple_shapes_dataset.domain import DomainDesc
                 
                 # Find dataset path
-                dataset_path = os.path.join(root_dir, "full_shapes_dataset/simple_shapes_dataset")
+                dataset_path = "/home/janerik/GLW_PID/simple_shapes_dataset/simple_shapes_dataset"
                 if not os.path.exists(dataset_path):
                     dataset_path = os.path.join(root_dir, "simple-shapes-dataset/sample_dataset")
                     print(f"Full dataset not found, falling back to sample dataset at: {dataset_path}")
@@ -812,7 +817,7 @@ def main():
             print("🚀 Starting single model analysis using data interface...")
             
             # Create ModelDataProvider using the data_interface.py
-            from shimmer_ssd.pid_analysis.data_interface import ModelDataProvider, GeneralizedDataInterface
+            from .data_interface import ModelDataProvider, GeneralizedDataInterface
             
             provider = ModelDataProvider(
                 model_path=args.model_path,
@@ -929,7 +934,6 @@ def main():
                 else:
                     print("\n⚠️  Cluster validation requested but module not available")
                     print("   Make sure cluster_visualization_validation.py is properly installed")
-                    
                     # Still finish wandb run if it exists
                     if wandb.run is not None and HAS_WANDB:
                         wandb.finish()
@@ -946,55 +950,6 @@ def main():
                     print(f"🔬 Cluster validation: {result['cluster_validation'].get('visualized_clusters', 0)} clusters validated")
                 else:
                     print(f"🔬 Cluster validation: {validation_status}")
-            print("="*60 + "\n")
-        
-        elif args.multiple_models:
-            if not args.checkpoint_dir:
-                parser.error("❌ --checkpoint-dir is required when using --multiple-models")
-            
-            print("🔍 MULTIPLE MODELS ANALYSIS")
-            print("─"*35)
-            print(f"📂 Checkpoint Directory: {args.checkpoint_dir}")
-            print(f"🎯 Target Config: {args.target_config}")
-            print(f"📊 Samples per Model: {args.n_samples:,}")
-            print("─"*35 + "\n")
-            
-            print("🚀 Starting multiple models analysis...")
-            
-            results = analyze_multiple_models(
-                checkpoint_dir=args.checkpoint_dir,
-                domain_modules=domain_modules,
-                output_dir=args.output_dir,
-                source_config=source_config,
-                target_config=args.target_config,
-                synthetic_labels=None,  # Will be auto-generated for each model
-                n_samples=args.n_samples,
-                batch_size=args.batch_size,
-                num_clusters=args.num_clusters,
-                discrim_epochs=args.discrim_epochs,
-                ce_epochs=args.ce_epochs,
-                discrim_hidden_dim=args.discrim_hidden_dim,
-                discrim_layers=args.discrim_layers,
-                use_wandb=args.wandb,
-                wandb_project=args.wandb_project,
-                wandb_entity=args.wandb_entity,
-                data_module=data_module,
-                dataset_split=args.dataset_split,
-                use_gw_encoded=args.use_gw_encoded,
-                use_compile_torch=args.use_compile,
-                ce_test_mode_run=args.ce_test_mode,
-                max_test_examples_run=args.max_test_examples,
-                auto_find_lr_run=args.auto_find_lr,
-                lr_finder_steps_run=args.lr_finder_steps,
-                lr_start_run=args.lr_start,
-                lr_end_run=args.lr_end,
-                enable_extended_metrics_discrim=not args.disable_extended_metrics,
-                cluster_method_discrim=args.cluster_method  # Pass cluster method
-            )
-            
-            print(f"\n✅ MULTIPLE MODELS ANALYSIS COMPLETE!")
-            print(f"📊 Analyzed {len(results)} models")
-            print(f"📁 Results saved to: {args.output_dir}")
             print("="*60 + "\n")
         
         elif args.model_list:

@@ -37,6 +37,11 @@ root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
 if root_dir not in sys.path:
     sys.path.insert(0, root_dir)
 
+# Add the shimmer-ssd directory to the path for shimmer_ssd imports
+shimmer_ssd_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..', 'shimmer-ssd'))
+if shimmer_ssd_root not in sys.path:
+    sys.path.insert(0, shimmer_ssd_root)
+
 # Try to import shimmer modules with proper path handling
 import sys
 import os

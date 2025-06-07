@@ -69,13 +69,23 @@ except ImportError:
 # Set up path for project imports
 sys.path.insert(0, '/home/janerik/shimmer-ssd')
 
+# Add the shimmer-ssd directory to the path for shimmer_ssd imports
+shimmer_ssd_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..', 'shimmer-ssd'))
+if shimmer_ssd_root not in sys.path:
+    sys.path.insert(0, shimmer_ssd_root)
+
+# Add the root directory to the path for imports
+root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
+
 # Project imports - these are only needed when actually running the function
 def _get_glw_imports():
     """Lazy import of GLW modules to avoid import errors when just loading the module."""
     try:
         # Use the local load_checkpoint from utils.py that handles different checkpoint formats
         from gw_module_configurable_fusion import GWModuleConfigurableFusion
-        from shimmer_ssd.pid_analysis.utils import load_checkpoint
+        from .utils import load_checkpoint
         from losses_and_weights_GLW_training import load_domain_modules
         return GWModuleConfigurableFusion, load_checkpoint, load_domain_modules
     except ImportError as e:
@@ -152,7 +162,7 @@ def hopkins_test_clusterability(
     H_null = np.array(H_null)
     
     # Compute p-value
-    p_value = np.mean(H_null >= H_obs)
+    p_value = np.mean(H_null <= H_obs)
     
     # Compute statistics
     H_null_mean = H_null.mean()

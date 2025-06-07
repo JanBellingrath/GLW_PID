@@ -27,6 +27,12 @@ import warnings
 from tqdm import tqdm
 import numpy.core.multiarray as multiarray
 
+# Add path setup for shimmer imports
+import sys
+shimmer_ssd_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'shimmer-ssd'))
+if shimmer_ssd_root not in sys.path:
+    sys.path.insert(0, shimmer_ssd_root)
+
 # Import gmm-torch
 from gmm import GaussianMixture
 
