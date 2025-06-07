@@ -1,41 +1,25 @@
 # GLW_PID: Global Workspace Partial Information Decomposition Analysis
 
-[![Python](https://img.shields.io/badge/Python-3.8%2B-blue.svg)](https://python.org)
-[![PyTorch](https://img.shields.io/badge/PyTorch-1.9%2B-orange.svg)](https://pytorch.org)
-[![Wandb](https://img.shields.io/badge/Wandb-Integration-yellow.svg)](https://wandb.ai)
+Framework for analyzing information flow in Global Workspace neural architectures using Partial Information Decomposition (PID) and Sinkhorn-Knopp optimal transport.
 
-A comprehensive framework for analyzing information flow in Global Workspace neural architectures using **Partial Information Decomposition (PID)** and **Sinkhorn-Knopp optimal transport**. This repository provides tools for understanding how information is redundantly shared, uniquely processed, and synergistically combined across different modalities in multimodal neural networks.
+## Overview
 
-## 🎯 Overview
+Global Workspace models integrate information from multiple domains (visual, textual, etc.) through shared latent representations. This repository implements PID analysis to decompose mutual information between domains into four components:
 
-Global Workspace models integrate information from multiple domains (visual, textual, etc.) through shared latent representations. This repository implements PID analysis to decompose the mutual information between domains into interpretable components:
+- **Redundancy**: Information shared by both input domains about the target
+- **Unique Information A**: Information exclusively from domain A
+- **Unique Information B**: Information exclusively from domain B  
+- **Synergy**: Information only available when both domains are combined
 
-- **🔄 Redundancy**: Information shared by both input domains about the target
-- **🅰️ Unique Information A**: Information exclusively from domain A
-- **🅱️ Unique Information B**: Information exclusively from domain B  
-- **⚡ Synergy**: Information only available when both domains are combined
+## Key Features
 
-## 🚀 Key Features
-
-### 📊 **Professional Sinkhorn Coupling Visualization**
-- Real-time coupling matrix visualization during training
-- Professional heatmaps with statistical analysis
-- Wandb integration for experiment tracking
-- Memory-efficient visualization for large matrices
-
-### 🧠 **Advanced PID Analysis**
-- Complete PID framework with discriminator-based estimation
-- Support for both synthetic Boolean functions and real multimodal data
+- PID analysis with discriminator-based estimation
+- Sinkhorn-Knopp coupling matrix visualization with wandb integration
+- Support for synthetic Boolean functions and real multimodal data
 - Automatic cluster generation and validation
-- Extensible to arbitrary numbers of domains
+- Real-time coupling matrix tracking during training
 
-### 🎨 **Comprehensive Visualization Suite**
-- Cluster distribution validation with real data
-- Training evolution tracking
-- Marginal distribution analysis
-- Professional publication-ready plots
-
-## 📁 Repository Structure
+## Repository Structure
 
 ```
 GLW_PID/
@@ -46,7 +30,7 @@ GLW_PID/
 │       ├── eval.py            # Model evaluation and PID computation
 │       ├── train.py           # Training procedures for discriminators
 │       ├── sinkhorn.py        # Sinkhorn-Knopp algorithm with wandb visualization
-│       ├── coupling_visualization.py  # Professional coupling matrix visualization
+│       ├── coupling_visualization.py  # Coupling matrix visualization functions
 │       ├── data_interface.py  # Unified data handling interface
 │       ├── synthetic_data.py  # Boolean function synthesis for validation
 │       ├── cluster_visualization_validation.py  # Cluster validation tools
@@ -60,36 +44,29 @@ GLW_PID/
 └── run_pid_analysis.py        # Quick analysis launcher
 ```
 
-## 🛠️ Installation
+## Installation
 
-### Prerequisites
+Requirements:
 - Python 3.8+
+- PyTorch 1.9+
 - CUDA-capable GPU (recommended)
-- Git
 
-### Setup
 ```bash
-# Clone the repository
 git clone https://github.com/JanBellingrath/GLW_PID.git
 cd GLW_PID
 
-# Install dependencies
 pip install torch torchvision torchaudio
 pip install numpy matplotlib seaborn scikit-learn
-pip install wandb  # For experiment tracking
-pip install lightning  # For model training
-
-# Optional: Install for development
-pip install pytest black flake8
+pip install wandb lightning
 ```
 
-## 🎮 Quick Start
+## Usage
 
-### 1. **Analyze a Trained Model**
+### Model Analysis
 ```bash
 python -m shimmer_ssd.pid_analysis.main model \
   --single-model \
-  --model-path path/to/your/model.ckpt \
+  --model-path path/to/model.ckpt \
   --domain-configs shimmer_ssd/pid_analysis/domain_v_config.json shimmer_ssd/pid_analysis/domain_t_config.json \
   --target-config "gw_rep" \
   --source-config '{"v_latents":"v_latents_latent","t":"t_latent"}' \
@@ -100,60 +77,42 @@ python -m shimmer_ssd.pid_analysis.main model \
   --wandb-project "pid-analysis"
 ```
 
-### 2. **Validate with Boolean Functions**
+### Synthetic Validation
 ```bash
 python -m shimmer_ssd.pid_analysis.main synthetic \
   --functions and xor or \
   --output-dir synthetic_results \
   --compare-theoretical \
-  --wandb \
-  --wandb-project "pid-synthetic"
+  --wandb
 ```
 
-### 3. **One-Liner Sinkhorn Visualization**
+### Sinkhorn Visualization
 ```python
 from shimmer_ssd.pid_analysis.coupling_visualization import log_sinkhorn_coupling
-
-# In your training loop:
 log_sinkhorn_coupling(coupling_matrix, step=iteration, prefix="training")
 ```
 
-## 📊 Analysis Modes
+## Analysis Modes
 
-### **Model-Based Analysis**
+### Model-Based
 - Analyze trained Global Workspace models
 - Extract latent representations from multiple domains
 - Compute PID components using discriminator networks
 - Visualize coupling matrices and cluster evolution
 
-### **Synthetic Validation**
+### Synthetic 
 - Test PID estimation on known Boolean functions
 - Compare empirical results with theoretical values
 - Validate methodology with ground-truth information
 
-### **File-Based Analysis**
+### File-Based
 - Process pre-saved domain representations
 - Flexible input for custom data formats
 - Batch analysis of multiple datasets
 
-## 🎨 Visualization Features
+## Configuration
 
-### **Sinkhorn Coupling Matrices**
-- **Real-time heatmaps** showing optimal transport plans
-- **Statistical tracking**: entropy, sparsity, diagonal dominance
-- **Evolution visualization** over training iterations
-- **Memory-efficient** handling of large matrices
-
-### **Cluster Validation**
-- **Professional cluster visualization** with real data samples
-- **Distribution analysis** across domains
-- **Quality metrics** for cluster meaningfulness
-- **Publication-ready plots** with customizable styling
-
-## 🔧 Configuration
-
-### **Domain Configuration**
-Configure domain-specific parameters in JSON files:
+Domain parameters are specified in JSON files:
 ```json
 {
   "domain_name": "v_latents",
@@ -163,46 +122,24 @@ Configure domain-specific parameters in JSON files:
 }
 ```
 
-### **Wandb Integration**
-Automatic experiment tracking includes:
+Wandb logging includes:
 - PID component values over time
 - Coupling matrix visualizations
 - Training metrics and convergence plots
 - Cluster validation results
 
-## 📈 Performance Optimizations
+## Implementation Details
 
-- **Mixed Precision Training**: Automatic FP16 support
-- **Gradient Checkpointing**: Memory-efficient Sinkhorn computation
-- **Chunked Processing**: Scalable to large datasets
-- **GPU Memory Management**: Aggressive cleanup options
+- Mixed precision training with automatic FP16 support
+- Gradient checkpointing for memory-efficient Sinkhorn computation
+- Chunked processing for large datasets
+- GPU memory management with cleanup options
 
-## 🧪 Testing & Validation
+## Validation
 
-### **Theoretical Validation**
-The framework includes validation against theoretical PID values for Boolean functions:
-- **Perfect accuracy** on known cases (AND, XOR, OR)
-- **Convergence testing** with different hyperparameters
-- **Robustness analysis** across various configurations
+The framework includes validation against theoretical PID values for Boolean functions (AND, XOR, OR) and cluster meaningfulness validation with visual data.
 
-### **Real Data Validation**
-- **Cluster meaningfulness** validation with visual data
-- **Cross-modal consistency** checks
-- **Statistical significance** testing
-
-## 🤝 Contributing
-
-We welcome contributions! Please see our contribution guidelines:
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-## 📝 Citation
-
-If you use this code in your research, please cite:
+## Citation
 
 ```bibtex
 @software{bellingrath2024glw_pid,
@@ -214,26 +151,8 @@ If you use this code in your research, please cite:
 }
 ```
 
-## 📧 Contact
+## Contact
 
-**Jan Bellingrath**  
+Jan Bellingrath  
 Computational Neuroscience × Artificial Intelligence  
-Cerco (CNRS), Toulouse  
-
-- GitHub: [@JanBellingrath](https://github.com/JanBellingrath)
-- Email: [Your Email]
-
-## 📜 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- **Sinkhorn Algorithm**: Implementation based on optimal transport theory
-- **PID Framework**: Inspired by Williams & Beer (2010) information decomposition
-- **Global Workspace Theory**: Following Baars (1988) and Dehaene et al. (2017)
-- **Wandb Integration**: Professional experiment tracking and visualization
-
----
-
-*This repository is part of ongoing research into information processing in Global Workspace neural architectures. For questions about the theoretical background or implementation details, please open an issue or contact the authors.* 
+Cerco (CNRS), Toulouse 
