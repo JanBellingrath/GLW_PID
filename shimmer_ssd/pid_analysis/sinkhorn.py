@@ -3,6 +3,13 @@ import torch.utils.checkpoint
 import gc
 from typing import Optional
 
+# Import coupling visualization for wandb logging
+try:
+    from .coupling_visualization import log_sinkhorn_coupling
+    HAS_COUPLING_VIZ = True
+except ImportError:
+    HAS_COUPLING_VIZ = False
+
 
 
 #TODO think about entropic regularization... I think Sinkhorn Knopp is without it, but check paper
@@ -20,6 +27,9 @@ def sinkhorn_probs(
     tol: float = 1e-8,
     max_iter: int = 500,
     chunk_size: Optional[int] = None, # Parameter chunk_size takes precedence if provided
+    log_to_wandb: bool = False,  # New parameter for wandb logging
+    wandb_prefix: str = "sinkhorn",  # Prefix for wandb logs
+    wandb_log_interval: int = 50,  # Log every N iterations
 ) -> torch.Tensor:
     """
     Apply the Sinkhorn-Knopp algorithm to project a matrix onto a transport polytope.
@@ -32,6 +42,9 @@ def sinkhorn_probs(
         tol: Convergence tolerance for row/column sums
         max_iter: Maximum number of iterations
         chunk_size: Size of chunks for checkpointing (default: sqrt(max_iter) or CHUNK_SIZE if param is None)
+        log_to_wandb: Whether to log coupling matrix visualizations to wandb during iterations
+        wandb_prefix: Prefix for wandb log keys (default: "sinkhorn")
+        wandb_log_interval: Log coupling matrix every N iterations (default: 50)
         
     Returns:
         Projected matrix that approximately satisfies the marginal constraints
@@ -82,6 +95,15 @@ def sinkhorn_probs(
         )
         done += steps
         
+        # Log coupling matrix to wandb if requested
+        if log_to_wandb and HAS_COUPLING_VIZ and done % wandb_log_interval == 0:
+            log_sinkhorn_coupling(
+                matrix, 
+                step=done, 
+                prefix=wandb_prefix,
+                title_suffix=f"(iter {done}/{max_iter})"
+            )
+        
         if (torch.allclose(matrix.sum(dim=1, dtype=dtype), x1_probs, atol=tol) and
             torch.allclose(matrix.sum(dim=0, dtype=dtype), x2_probs, atol=tol)):
             break
@@ -89,5 +111,14 @@ def sinkhorn_probs(
         # Use local MEMORY_CLEANUP_INTERVAL and AGGRESSIVE_CLEANUP
         if done % (effective_chunk_size * MEMORY_CLEANUP_INTERVAL) == 0 and AGGRESSIVE_CLEANUP:
             torch.cuda.empty_cache() if torch.cuda.is_available() else gc.collect()
+    
+    # Log final coupling matrix to wandb if requested
+    if log_to_wandb and HAS_COUPLING_VIZ:
+        log_sinkhorn_coupling(
+            matrix, 
+            step=done, 
+            prefix=f"{wandb_prefix}_final",
+            title_suffix=f"(converged at iter {done})"
+        )
     
     return matrix.to(torch.float32) 

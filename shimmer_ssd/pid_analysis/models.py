@@ -289,6 +289,9 @@ class CEAlignment(nn.Module): #TODO give another name to this class
                 p_y_x2[:, c],  # col-marginal = p(y=c | x2) - no averaging
                 # Potentially pass chunk_size from this model if needed by sinkhorn
                 # chunk_size = self.chunk_size # If CEAlignment had self.chunk_size
+                log_to_wandb=True,  # Enable wandb logging for coupling matrices
+                wandb_prefix=f"coupling_cluster_{c}",  # Log each cluster separately
+                wandb_log_interval=25,  # Log every 25 iterations for more granular tracking
             )
             couplings.append(coupling_c)
         
