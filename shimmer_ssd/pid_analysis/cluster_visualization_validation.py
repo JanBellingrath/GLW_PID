@@ -51,6 +51,21 @@ except ImportError:
     HAS_WANDB = False
     print("Warning: wandb not available, visualization logging will be disabled")
 
+# Optional pyclustertend import for Hopkins test
+try:
+    from pyclustertend import hopkins
+    HAS_PYCLUSTERTEND = True
+except ImportError:
+    HAS_PYCLUSTERTEND = False
+    print("Warning: pyclustertend not available, Hopkins test will be skipped")
+
+# Import tqdm for progress bars
+try:
+    from tqdm import tqdm
+    HAS_TQDM = True
+except ImportError:
+    HAS_TQDM = False
+
 # Set up path for project imports
 sys.path.insert(0, '/home/janerik/shimmer-ssd')
 
@@ -65,6 +80,149 @@ def _get_glw_imports():
         return GWModuleConfigurableFusion, load_checkpoint, load_domain_modules
     except ImportError as e:
         raise ImportError(f"GLW modules not available: {e}. Make sure you're running from the shimmer-ssd root directory.")
+
+
+def hopkins_test_clusterability(
+    data: np.ndarray,
+    n_samples: int = 150,
+    n_bootstrap: int = 1000,
+    wandb_run = None,
+    data_name: str = "gw_rep"
+) -> Dict[str, Any]:
+    """
+    Perform Hopkins test to evaluate clusterability of data.
+    
+    Args:
+        data: Data array of shape [N, D]
+        n_samples: Number of samples for Hopkins statistic (default: 150)
+        n_bootstrap: Number of bootstrap samples for p-value computation
+        wandb_run: Wandb run for logging (optional)
+        data_name: Name of the data for logging
+        
+    Returns:
+        Dictionary with Hopkins statistic, p-value, and metadata
+    """
+    if not HAS_PYCLUSTERTEND:
+        print("   ⚠️  Skipping Hopkins test: pyclustertend not available")
+        return {"status": "skipped", "reason": "pyclustertend_unavailable"}
+    
+    print(f"   🧮 Performing Hopkins test for clusterability on {data_name}")
+    print(f"      Data shape: {data.shape}")
+    print(f"      Hopkins samples: {n_samples}")
+    print(f"      Bootstrap samples: {n_bootstrap}")
+    
+    # Ensure data is properly scaled for Hopkins test
+    from sklearn.preprocessing import scale
+    data_scaled = scale(data)
+    
+    # Compute observed Hopkins statistic
+    try:
+        H_obs = hopkins(data_scaled, n_samples)
+        print(f"      Observed Hopkins H = {H_obs:.4f}")
+    except Exception as e:
+        print(f"   ❌ Error computing Hopkins statistic: {e}")
+        return {"status": "failed", "reason": str(e)}
+    
+    # Bootstrap null distribution
+    print(f"   🔄 Computing null distribution with {n_bootstrap} bootstrap samples...")
+    H_null = []
+    
+    # Get data bounds for uniform sampling
+    mins, maxs = data_scaled.min(axis=0), data_scaled.max(axis=0)
+    
+    if HAS_TQDM:
+        progress_iter = tqdm(range(n_bootstrap), desc="   Bootstrap", leave=False)
+    else:
+        progress_iter = range(n_bootstrap)
+        
+    for i in progress_iter:
+        try:
+            # Generate uniform random data with same bounds
+            X_null = np.random.uniform(mins, maxs, size=data_scaled.shape)
+            H_null_sample = hopkins(X_null, n_samples)
+            H_null.append(H_null_sample)
+        except Exception as e:
+            print(f"      ⚠️  Bootstrap sample {i} failed: {e}")
+            continue
+    
+    if len(H_null) == 0:
+        print("   ❌ All bootstrap samples failed")
+        return {"status": "failed", "reason": "bootstrap_failed"}
+    
+    H_null = np.array(H_null)
+    
+    # Compute p-value
+    p_value = np.mean(H_null >= H_obs)
+    
+    # Compute statistics
+    H_null_mean = H_null.mean()
+    H_null_std = H_null.std()
+    
+    results = {
+        "status": "completed",
+        "hopkins_observed": float(H_obs),
+        "hopkins_null_mean": float(H_null_mean),
+        "hopkins_null_std": float(H_null_std),
+        "p_value": float(p_value),
+        "n_samples": n_samples,
+        "n_bootstrap": len(H_null),
+        "data_shape": list(data.shape),
+        "data_name": data_name
+    }
+    
+    print(f"   ✅ Hopkins test completed:")
+    print(f"      Observed H = {H_obs:.4f}")
+    print(f"      Null H mean = {H_null_mean:.4f} ± {H_null_std:.4f}")
+    print(f"      p-value = {p_value:.4f}")
+    
+    # Interpret results
+    if p_value < 0.05:
+        interpretation = "Data is significantly clusterable (reject null hypothesis of uniformity)"
+        print(f"      🎯 {interpretation}")
+    else:
+        interpretation = "Data is not significantly clusterable (fail to reject null hypothesis)"
+        print(f"      📊 {interpretation}")
+    
+    results["interpretation"] = interpretation
+    
+    # Log to wandb if available
+    if wandb_run and HAS_WANDB:
+        wandb_metrics = {
+            f"hopkins/{data_name}/observed": H_obs,
+            f"hopkins/{data_name}/null_mean": H_null_mean,
+            f"hopkins/{data_name}/null_std": H_null_std,
+            f"hopkins/{data_name}/p_value": p_value,
+            f"hopkins/{data_name}/n_samples": n_samples,
+            f"hopkins/{data_name}/n_bootstrap": len(H_null),
+            f"hopkins/{data_name}/clusterable": p_value < 0.05
+        }
+        wandb_run.log(wandb_metrics)
+        
+        # Create and log histogram of null distribution
+        plt.figure(figsize=(10, 6))
+        plt.hist(H_null, bins=50, alpha=0.7, color='lightblue', density=True, label='Null distribution')
+        plt.axvline(H_obs, color='red', linestyle='--', linewidth=2, label=f'Observed H = {H_obs:.4f}')
+        plt.axvline(H_null_mean, color='blue', linestyle='-', linewidth=1, label=f'Null mean = {H_null_mean:.4f}')
+        plt.xlabel('Hopkins Statistic')
+        plt.ylabel('Density')
+        plt.title(f'Hopkins Test for {data_name}\nObserved H = {H_obs:.4f}, p-value = {p_value:.4f}')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        
+        # Add interpretation text
+        plt.text(0.02, 0.98, f'{interpretation}\n(p-value = {p_value:.4f})', 
+                transform=plt.gca().transAxes, verticalalignment='top',
+                bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
+        
+        plt.tight_layout()
+        
+        # Log to wandb
+        wandb_run.log({f"hopkins/{data_name}/distribution": wandb.Image(plt)})
+        plt.close()
+        
+        print(f"      📊 Logged Hopkins test results and visualization to wandb")
+    
+    return results
 
 
 def assign_samples_to_clusters(
@@ -1196,6 +1354,42 @@ def run_cluster_validation_from_results(
         print(f"      Least populated cluster: {min_samples} samples")
         print(f"      Coverage: {len(unique_clusters)}/{len(np.unique(cluster_labels))} training clusters have validation samples")
         
+        # Hopkins Test for Clusterability: Perform before cluster visualization
+        print("\n🧪 Hopkins Test: Evaluating clusterability of training data")
+        hopkins_results = None
+        if 'clustering_target_data' in generated_data:
+            clustering_data = generated_data['clustering_target_data']
+            if torch.is_tensor(clustering_data):
+                clustering_numpy = clustering_data.cpu().numpy()
+            else:
+                clustering_numpy = np.array(clustering_data)
+            
+            hopkins_results = hopkins_test_clusterability(
+                data=clustering_numpy,
+                n_samples=min(150, len(clustering_numpy) // 10),  # Use up to 150 or 10% of data
+                n_bootstrap=1000,
+                wandb_run=wandb_run,
+                data_name="clustering_target_data"
+            )
+        elif 'gw_rep' in generated_data:
+            print("   📊 Using 'gw_rep' data for Hopkins test")
+            gw_data = generated_data['gw_rep']
+            if torch.is_tensor(gw_data):
+                gw_numpy = gw_data.cpu().numpy()
+            else:
+                gw_numpy = np.array(gw_data)
+            
+            hopkins_results = hopkins_test_clusterability(
+                data=gw_numpy,
+                n_samples=min(150, len(gw_numpy) // 10),  # Use up to 150 or 10% of data
+                n_bootstrap=1000,
+                wandb_run=wandb_run,
+                data_name="gw_rep"
+            )
+        else:
+            print("   ⚠️  No suitable training data found for Hopkins test")
+            hopkins_results = {"status": "skipped", "reason": "no_training_data"}
+        
         # Step 8: Create cluster visualizations
         print("\n🎨 Step 8: Creating cluster visualizations")
         
@@ -1230,6 +1424,7 @@ def run_cluster_validation_from_results(
             'model_path': model_path,
             'cluster_method': cluster_method,
             'prediction_method': 'cluster_centers' if cluster_centers is not None else 'random',
+            'hopkins_test': hopkins_results,
             'status': 'completed'
         })
         
