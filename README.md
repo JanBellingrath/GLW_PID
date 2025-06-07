@@ -11,6 +11,8 @@ Global Workspace models integrate information from multiple domains (visual, tex
 - **Unique Information B**: Information exclusively from domain B  
 - **Synergy**: Information only available when both domains are combined
 
+This framework builds on the theoretical foundations established by [Liang et al. (2023)](https://proceedings.neurips.cc/paper_files/paper/2023/hash/575286a73f238b6516ce0467d67eadb2-Abstract-Conference.html), who proposed information-theoretic approaches for quantifying multimodal interactions using PID statistics.
+
 ## Key Features
 
 - PID analysis with discriminator-based estimation
@@ -141,6 +143,8 @@ The framework includes validation against theoretical PID values for Boolean fun
 
 ## Citation
 
+If you use this code, please cite both this repository and the foundational theoretical work:
+
 ```bibtex
 @software{bellingrath2024glw_pid,
   title={GLW_PID: Global Workspace Partial Information Decomposition Analysis},
@@ -148,6 +152,15 @@ The framework includes validation against theoretical PID values for Boolean fun
   year={2024},
   url={https://github.com/JanBellingrath/GLW_PID},
   institution={CNRS, Cerco, Toulouse}
+}
+
+@inproceedings{liang2023quantifying,
+  title={Quantifying \& Modeling Multimodal Interactions: An Information Decomposition Framework},
+  author={Liang, Paul Pu and Cheng, Yun and Fan, Xiang and Ling, Chun Kai and Nie, Suzanne and Chen, Richard and Deng, Zihao and Allen, Nicholas and Auerbach, Randy and Mahmood, Faisal and Salakhutdinov, Ruslan and Morency, Louis-Philippe},
+  booktitle={Advances in Neural Information Processing Systems},
+  volume={36},
+  year={2023},
+  url={https://proceedings.neurips.cc/paper_files/paper/2023/hash/575286a73f238b6516ce0467d67eadb2-Abstract-Conference.html}
 }
 ```
 
