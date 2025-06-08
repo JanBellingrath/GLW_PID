@@ -848,6 +848,12 @@ class LRFinder:
 
     def range_test(self, train_loader: torch.utils.data.DataLoader, start_lr: float = 1e-7, end_lr: float = 10, num_iter: int = 1, step_mode: str = "exp", smooth_f: float = 0.05, diverge_th: float = 5.0):
         self.model.train()
+        
+        # Set LR finding mode on CEAlignmentInformation models to skip expensive visualizations
+        if hasattr(self.model, 'set_lr_finding_mode'):
+            self.model.set_lr_finding_mode(True)
+            print("🔍 LR Finder: Enabled lightweight mode for Sinkhorn visualization")
+        
         self.history = {'lr': [], 'loss': []}
         current_lr = start_lr
         for param_group in self.optimizer.param_groups: param_group['lr'] = current_lr
@@ -901,7 +907,19 @@ class LRFinder:
         import matplotlib.pyplot as plt # Import locally for plotting
         import numpy as np # Import locally
         lrs, losses = self.history["lr"], self.history["loss"]
-        lrs, losses = np.array(lrs[skip_start:-skip_end if skip_end > 0 else len(lrs)]), np.array(losses[skip_start:-skip_end if skip_end > 0 else len(losses)])
+        
+        # Ensure we don't skip more points than we have
+        total_points = len(lrs)
+        if skip_start + skip_end >= total_points:
+            # If we would skip too many points, adjust the parameters
+            skip_start = max(0, min(skip_start, total_points // 3))
+            skip_end = max(0, min(skip_end, total_points // 3))
+            # Ensure we have at least 1 point remaining
+            if skip_start + skip_end >= total_points:
+                skip_start = skip_end = 0
+        
+        end_idx = -skip_end if skip_end > 0 else len(lrs)
+        lrs, losses = np.array(lrs[skip_start:end_idx]), np.array(losses[skip_start:end_idx])
         
         fig, axs = plt.subplots(2, 1, figsize=(12, 10), sharex=True, gridspec_kw={'height_ratios': [2, 1]})
         axs[0].plot(lrs, losses, label='Loss', linewidth=2)
@@ -953,6 +971,16 @@ def find_optimal_lr(model, train_ds, batch_size: int = 256, start_lr: float = 1e
     lr_finder_instance = LRFinder(model=model, optimizer=optimizer, criterion=criterion_fn, device=model_device)
     print(f"Running LR finder from {start_lr:.2e} to {end_lr:.2e} over {num_iter} iterations")
     
+    # Initialize custom wandb metrics for Sinkhorn coupling visualization to prevent step conflicts
+    # Do this whenever wandb is available and active (not just when log_to_wandb=True)
+    if HAS_WANDB and wandb.run is not None:
+        try:
+            from .coupling_visualization import initialize_sinkhorn_wandb_metrics
+            initialize_sinkhorn_wandb_metrics()
+            print("🎯 Initialized custom wandb metrics for LR finding to prevent step conflicts")
+        except ImportError:
+            print("⚠️  Warning: Could not import Sinkhorn metrics initialization")
+    
     try:
         lr_finder_instance.range_test(train_loader, start_lr=start_lr, end_lr=end_lr, num_iter=num_iter)
     except Exception as e:
@@ -973,8 +1001,7 @@ def find_optimal_lr(model, train_ds, batch_size: int = 256, start_lr: float = 1e
         raise
     fig = lr_finder_instance.plot(skip_start=skip_start, skip_end=skip_end, return_fig=True)
     
-    # Assuming HAS_WANDB and wandb are defined globally
-    global HAS_WANDB, wandb
+    # Log LR finder plot to wandb if enabled
     if log_to_wandb and HAS_WANDB and wandb.run is not None:
         try: wandb.log({"lr_finder/loss_vs_lr": wandb.Image(fig)})
         except Exception as e: print(f"Warning: Could not log LR finder plot to wandb: {e}")

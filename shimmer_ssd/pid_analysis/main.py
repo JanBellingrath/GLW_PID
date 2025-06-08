@@ -28,7 +28,6 @@ if shimmer_ssd_root not in sys.path:
 # Import from eval.py since analysis.py doesn't exist
 from .eval import (
     analyze_model,
-    analyze_multiple_models,
     analyze_multiple_models_from_list,
     analyze_with_data_interface
 )
@@ -320,6 +319,14 @@ def main():
                        help='Maximum number of clusters to visualize in validation')
     model_parser.add_argument('--val-samples-per-cluster', type=int, default=100,
                        help='Number of validation samples to show per cluster')
+    
+    # Hopkins test arguments for cluster validation
+    model_parser.add_argument('--enable-hopkins-test', action='store_true',
+                       help='Enable Hopkins test for clusterability evaluation during cluster validation (default: False)')
+    model_parser.add_argument('--hopkins-samples', type=int, default=150,
+                       help='Number of samples for Hopkins statistic computation')
+    model_parser.add_argument('--hopkins-bootstrap', type=int, default=1000,
+                       help='Number of bootstrap samples for Hopkins p-value computation')
     
     # New flag for cluster inspection only
     model_parser.add_argument("--only-inspect-clusters", action="store_true",
@@ -884,6 +891,11 @@ def main():
                 if HAS_CLUSTER_VALIDATION:
                     print("\n🔬 STARTING CLUSTER VALIDATION")
                     print("="*60)
+                    print(f"🧪 Hopkins Test: {'Enabled' if args.enable_hopkins_test else 'Disabled'}")
+                    if args.enable_hopkins_test:
+                        print(f"   📊 Hopkins Samples: {args.hopkins_samples}")
+                        print(f"   🔄 Bootstrap Samples: {args.hopkins_bootstrap}")
+                    print("="*60)
                     
                     # Set up validation configuration
                     validation_config = {
@@ -891,7 +903,9 @@ def main():
                         'dataset_path': args.val_dataset_path,
                         'n_samples': args.val_n_samples,
                         'max_clusters': args.val_max_clusters,
-                        'samples_per_cluster': args.val_samples_per_cluster
+                        'samples_per_cluster': args.val_samples_per_cluster,
+                        'hopkins_samples': args.hopkins_samples,
+                        'hopkins_bootstrap': args.hopkins_bootstrap
                     }
                     
                     # Get the current wandb run (should exist from main analysis)
@@ -910,7 +924,8 @@ def main():
                         domain_modules=domain_modules,
                         analysis_results=result,
                         wandb_run=current_wandb_run,
-                        validation_config=validation_config
+                        validation_config=validation_config,
+                        enable_hopkins_test=args.enable_hopkins_test
                     )
                     
                     # Add validation results to main results
@@ -920,6 +935,12 @@ def main():
                         print(f"\n🎉 CLUSTER VALIDATION COMPLETE!")
                         print(f"📊 Validated {validation_results.get('validation_samples', 0)} samples")
                         print(f"🎨 Created visualizations for {validation_results.get('visualized_clusters', 0)} clusters")
+                        if 'hopkins_test' in validation_results and validation_results['hopkins_test'].get('status') == 'completed':
+                            hopkins_p = validation_results['hopkins_test'].get('p_value', 'N/A')
+                            hopkins_obs = validation_results['hopkins_test'].get('hopkins_observed', 'N/A')
+                            print(f"🧪 Hopkins Test: H={hopkins_obs:.4f}, p-value={hopkins_p:.4f}" if isinstance(hopkins_obs, float) and isinstance(hopkins_p, float) else f"🧪 Hopkins Test: Completed")
+                        elif args.enable_hopkins_test:
+                            print(f"🧪 Hopkins Test: {validation_results.get('hopkins_test', {}).get('status', 'Unknown')}")
                     else:
                         print(f"\n⚠️  Cluster validation {validation_results.get('status', 'unknown')}")
                         if 'reason' in validation_results:

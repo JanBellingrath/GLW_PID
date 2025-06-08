@@ -24,12 +24,13 @@ def sinkhorn_probs(
     matrix: torch.Tensor,
     x1_probs: torch.Tensor,
     x2_probs: torch.Tensor,
-    tol: float = 1e-8,
+    tol: float = 1e-2, #TODO this is as in the NeurIPS paper and helps with vanishin gradients 
     max_iter: int = 500,
     chunk_size: Optional[int] = None, # Parameter chunk_size takes precedence if provided
     log_to_wandb: bool = False,  # New parameter for wandb logging
     wandb_prefix: str = "sinkhorn",  # Prefix for wandb logs
-    wandb_log_interval: int = 50,  # Log every N iterations
+    wandb_log_interval: int = 1,  # Log every N iterations
+    lr_finding_mode: bool = False,  # Skip expensive visualizations during LR finding
 ) -> torch.Tensor:
     """
     Apply the Sinkhorn-Knopp algorithm to project a matrix onto a transport polytope.
@@ -45,6 +46,7 @@ def sinkhorn_probs(
         log_to_wandb: Whether to log coupling matrix visualizations to wandb during iterations
         wandb_prefix: Prefix for wandb log keys (default: "sinkhorn")
         wandb_log_interval: Log coupling matrix every N iterations (default: 50)
+        lr_finding_mode: If True, skips expensive visualizations during LR finding (default: False)
         
     Returns:
         Projected matrix that approximately satisfies the marginal constraints
@@ -101,7 +103,8 @@ def sinkhorn_probs(
                 matrix, 
                 step=done, 
                 prefix=wandb_prefix,
-                title_suffix=f"(iter {done}/{max_iter})"
+                title_suffix=f"(iter {done}/{max_iter})",
+                lr_finding_mode=lr_finding_mode
             )
         
         if (torch.allclose(matrix.sum(dim=1, dtype=dtype), x1_probs, atol=tol) and
@@ -118,7 +121,8 @@ def sinkhorn_probs(
             matrix, 
             step=done, 
             prefix=f"{wandb_prefix}_final",
-            title_suffix=f"(converged at iter {done})"
+            title_suffix=f"(converged at iter {done})",
+            lr_finding_mode=lr_finding_mode
         )
     
     return matrix.to(torch.float32) 

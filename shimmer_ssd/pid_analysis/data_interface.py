@@ -2,7 +2,7 @@
 Generalized data interface for PID analysis.
 Supports both synthetic data and model-based data generation.
 """
-
+#TODO is this is a problem? probably not GPT suggestion might need to correct the domain_names override in prepare_pid_data so it matches the actual tensor keys (e.g. use the values of fixed_source_config).
 import torch
 from typing import Dict, Any, Optional, Union, List, Tuple
 from abc import ABC, abstractmethod
@@ -101,7 +101,7 @@ class ModelDataProvider(DataProvider):
         model_path: str,
         domain_modules: Dict[str, Any],
         data_module=None,
-        dataset_split: str = "test",
+        dataset_split: str = "test",#TODO this is wrong
         use_gw_encoded: bool = False,
         device: str = "cuda" if torch.cuda.is_available() else "cpu"
     ):
@@ -144,7 +144,7 @@ class ModelDataProvider(DataProvider):
         torch.cuda.manual_seed_all(42)
         np.random.seed(42)
         random.seed(42)
-        os.environ['PYTHONHASHSEED'] = '42'
+        os.environ['PYTHONHASHSEED'] = '42' #TODO probably too late, might be the reason the model hashing did not work
         
         # Lazy import to avoid triggering shimmer warnings for Boolean analysis
         from .utils import generate_samples_from_model, load_checkpoint

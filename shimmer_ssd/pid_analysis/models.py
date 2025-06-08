@@ -262,7 +262,8 @@ class CEAlignment(nn.Module): #TODO give another name to this class
         x1: torch.Tensor,
         x2: torch.Tensor,
         p_y_x1: torch.Tensor,
-        p_y_x2: torch.Tensor
+        p_y_x2: torch.Tensor,
+        lr_finding_mode: bool = False
     ) -> torch.Tensor:
         batch_size = x1.size(0)
         if x2.size(0) != batch_size:
@@ -279,6 +280,25 @@ class CEAlignment(nn.Module): #TODO give another name to this class
         aff_centered = aff - aff_max.view(1, 1, -1) #TODO check if they also do this in the paper, if not investigate more
         A = torch.exp(aff_centered)
 
+        # Create a combined model that includes both mlp1 and mlp2 for gradient tracking (always available)
+        combined_params = {}
+        combined_params.update({f"mlp1.{name}": param for name, param in self.mlp1.named_parameters()})
+        combined_params.update({f"mlp2.{name}": param for name, param in self.mlp2.named_parameters()})
+
+        # Capture gradient magnitudes before Sinkhorn operations (only when not in LR finding mode)
+        if not lr_finding_mode:
+            try:
+                from .coupling_visualization import capture_gradient_magnitudes
+                # Capture gradients before Sinkhorn
+                gradients_before = {}
+                for param_name, param in combined_params.items():
+                    if param.grad is not None:
+                        gradients_before[param_name] = param.grad.norm().item()
+            except ImportError:
+                gradients_before = {}
+        else:
+            gradients_before = {}
+
         couplings = []
         for c in range(self.num_labels):
             # PAPER'S APPROACH: Use separate marginals directly as per Algorithm 1
@@ -292,8 +312,32 @@ class CEAlignment(nn.Module): #TODO give another name to this class
                 log_to_wandb=True,  # Enable wandb logging for coupling matrices
                 wandb_prefix=f"coupling_cluster_{c}",  # Log each cluster separately
                 wandb_log_interval=25,  # Log every 25 iterations for more granular tracking
+                lr_finding_mode=lr_finding_mode,  # Skip expensive visualizations during LR finding
             )
             couplings.append(coupling_c)
+        
+        # Capture gradient magnitudes after Sinkhorn operations and log comparison
+        if not lr_finding_mode and gradients_before:
+            try:
+                from .coupling_visualization import log_gradient_magnitudes
+                
+                # Capture gradients after Sinkhorn  
+                gradients_after = {}
+                for param_name, param in combined_params.items():
+                    if param.grad is not None:
+                        gradients_after[param_name] = param.grad.norm().item()
+                
+                # Log gradient magnitude changes to wandb
+                if gradients_after:  # Only log if we have gradients
+                    log_gradient_magnitudes(
+                        parameters_before=gradients_before,
+                        parameters_after=gradients_after,
+                        step=None,  # Could be passed as parameter if needed
+                        prefix="gradient_magnitudes",
+                        lr_finding_mode=lr_finding_mode
+                    )
+            except ImportError:
+                pass  # Gracefully handle missing visualization module
         
         P = torch.stack(couplings, dim=-1)
         return P
@@ -344,7 +388,14 @@ class CEAlignmentInformation(nn.Module): #TODO give another name to this class
                 self.scaler = None
         else:
             self.scaler = None
+            
+        # Flag to control visualization during LR finding
+        self.lr_finding_mode = False
 
+    def set_lr_finding_mode(self, enabled: bool):
+        """Enable or disable LR finding mode to control visualization."""
+        self.lr_finding_mode = enabled
+        
     def forward(self, x1, x2, y):
         """
         Compute PID components between domain representations.
@@ -390,8 +441,24 @@ class CEAlignmentInformation(nn.Module): #TODO give another name to this class
         mi_x1_y = torch.sum(p_y_x1 * torch.log(p_y_x1 / self.p_y.unsqueeze(0) + 1e-8), dim=1, dtype=torch.float32)
         mi_x2_y = torch.sum(p_y_x2 * torch.log(p_y_x2 / self.p_y.unsqueeze(0) + 1e-8), dim=1, dtype=torch.float32)
         
-        # Get coupling matrix from align
-        P = self.align(x1, x2, p_y_x1, p_y_x2)  # [batch, batch, num_labels]
+        # Log discriminator marginal distributions to wandb
+        try:
+            from .coupling_visualization import log_discriminator_marginals_to_wandb
+            log_discriminator_marginals_to_wandb(
+                p_y_x1=p_y_x1,
+                p_y_x2=p_y_x2,
+                p_y_x1x2=p_y_x1x2,
+                p_y_marginal=self.p_y,
+                step=None,  # Could be passed as parameter if needed
+                prefix="discriminator_marginals",
+                cluster_names=None,  # Could be passed as parameter if available
+                lr_finding_mode=self.lr_finding_mode
+            )
+        except ImportError:
+            pass  # Gracefully handle missing visualization module
+        
+        # Get coupling matrix from align (pass lr_finding_mode to control visualization)
+        P = self.align(x1, x2, p_y_x1, p_y_x2, lr_finding_mode=self.lr_finding_mode)  # [batch, batch, num_labels]
         
         # 1) Normalize along the label axis to get q̃(y|x1,x2)
         P_cond = P / (P.sum(dim=-1, keepdim=True) + 1e-8)  # [batch, batch, num_labels]

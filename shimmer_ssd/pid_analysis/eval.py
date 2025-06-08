@@ -101,6 +101,14 @@ def analyze_model(
                      "model_type": model_type
                    }
         )
+        
+        # Initialize custom wandb metrics for Sinkhorn coupling visualization
+        # This prevents step counter conflicts during LR finding and training
+        try:
+            from .coupling_visualization import initialize_sinkhorn_wandb_metrics
+            initialize_sinkhorn_wandb_metrics()
+        except ImportError:
+            print("⚠️  Warning: Could not import Sinkhorn metrics initialization")
     
     print(f"Loading model from {model_path}")
     model_gw = load_checkpoint(
@@ -827,6 +835,14 @@ def analyze_multiple_models_from_list(
                 }
             )
             print(f"Initialized W&B run: {wandb_run.name}")
+            
+            # Initialize custom wandb metrics for Sinkhorn coupling visualization
+            # This prevents step counter conflicts during LR finding and training
+            try:
+                from .coupling_visualization import initialize_sinkhorn_wandb_metrics
+                initialize_sinkhorn_wandb_metrics()
+            except ImportError:
+                print("⚠️  Warning: Could not import Sinkhorn metrics initialization")
         except Exception as e:
             print(f"Failed to initialize W&B: {e}")
             wandb_run = None
@@ -1160,6 +1176,14 @@ def analyze_with_data_interface(
                 'data_metadata': metadata
             }
         )
+        
+        # Initialize custom wandb metrics for Sinkhorn coupling visualization
+        # This prevents step counter conflicts during LR finding and training
+        try:
+            from .coupling_visualization import initialize_sinkhorn_wandb_metrics
+            initialize_sinkhorn_wandb_metrics()
+        except ImportError:
+            print("⚠️  Warning: Could not import Sinkhorn metrics initialization")
 
     # Get generated data for cluster ops and final results
     generated_data = data_interface.data_provider.get_data(n_samples, batch_size=batch_size)
@@ -1536,6 +1560,14 @@ def inspect_clusters_only(
             project=wandb_project, entity=wandb_entity, name=run_name,
             config=config
         )
+        
+        # Initialize custom wandb metrics for Sinkhorn coupling visualization
+        # This prevents step counter conflicts during LR finding and training
+        try:
+            from .coupling_visualization import initialize_sinkhorn_wandb_metrics
+            initialize_sinkhorn_wandb_metrics()
+        except ImportError:
+            print("⚠️  Warning: Could not import Sinkhorn metrics initialization")
     
     print(f"Getting data from data interface...")
     generated_data = data_interface.data_provider.get_data(n_samples=n_samples, batch_size=kwargs.get('batch_size', 128))
