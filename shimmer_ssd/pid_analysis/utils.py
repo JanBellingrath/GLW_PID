@@ -846,7 +846,7 @@ class LRFinder:
         self.model.load_state_dict(self.model_state)
         self.optimizer.load_state_dict(self.optimizer_state)
 
-    def range_test(self, train_loader: torch.utils.data.DataLoader, start_lr: float = 1e-7, end_lr: float = 10, num_iter: int = 1, step_mode: str = "exp", smooth_f: float = 0.05, diverge_th: float = 5.0):
+    def range_test(self, train_loader: torch.utils.data.DataLoader, start_lr: float = 1e-4, end_lr: float = 1000.0, num_iter: int = 1, step_mode: str = "exp", smooth_f: float = 0.05, diverge_th: float = 5.0):
         self.model.train()
         
         # Set LR finding mode on CEAlignmentInformation models to skip expensive visualizations
@@ -954,7 +954,7 @@ class LRFinder:
 
     def get_best_lr(self, factor=10.0): return self.best_lr / factor if self.best_lr else None
 
-def find_optimal_lr(model, train_ds, batch_size: int = 256, start_lr: float = 1e-7, end_lr: float = 1.0, num_iter: int = 10, skip_start: int = 10, skip_end: int = 5, factor: float = 10.0, log_to_wandb: bool = False, seed: int = 42, return_finder: bool = False) -> Union[float, Tuple[float, LRFinder]]:
+def find_optimal_lr(model, train_ds, batch_size: int = 256, start_lr: float = 1e-4, end_lr: float = 1000.0, num_iter: int = 10, skip_start: int = 10, skip_end: int = 5, factor: float = 10.0, log_to_wandb: bool = False, seed: int = 42, return_finder: bool = False) -> Union[float, Tuple[float, LRFinder]]:
     import matplotlib.pyplot as plt # Local import for when plot is generated
     torch.manual_seed(seed)
     if torch.cuda.is_available(): torch.cuda.manual_seed(seed)

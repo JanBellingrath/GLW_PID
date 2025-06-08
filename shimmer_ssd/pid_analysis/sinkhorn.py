@@ -97,8 +97,8 @@ def sinkhorn_probs(
         )
         done += steps
         
-        # Log coupling matrix to wandb if requested
-        if log_to_wandb and HAS_COUPLING_VIZ and done % wandb_log_interval == 0:
+        # Log coupling matrix to wandb if requested (skip during LR finding)
+        if log_to_wandb and HAS_COUPLING_VIZ and done % wandb_log_interval == 0 and not lr_finding_mode:
             log_sinkhorn_coupling(
                 matrix, 
                 step=done, 
@@ -115,8 +115,8 @@ def sinkhorn_probs(
         if done % (effective_chunk_size * MEMORY_CLEANUP_INTERVAL) == 0 and AGGRESSIVE_CLEANUP:
             torch.cuda.empty_cache() if torch.cuda.is_available() else gc.collect()
     
-    # Log final coupling matrix to wandb if requested
-    if log_to_wandb and HAS_COUPLING_VIZ:
+    # Log final coupling matrix to wandb if requested (skip during LR finding)
+    if log_to_wandb and HAS_COUPLING_VIZ and not lr_finding_mode:
         log_sinkhorn_coupling(
             matrix, 
             step=done, 

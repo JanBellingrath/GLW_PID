@@ -327,7 +327,7 @@ def train_discrim(model, loader, optimizer, data_type, num_epoch=40, wandb_prefi
 def train_ce_alignment(model: CEAlignmentInformation, loader: DataLoader, optimizer_class: Callable[..., torch.optim.Optimizer], 
                        num_epoch=10, wandb_prefix: Optional[str]=None, step_offset=0, use_compile=True, 
                        test_mode=False, max_test_examples=3000, auto_find_lr=False, 
-                       lr_finder_steps=200, lr_start=1e-7, lr_end=1.0):
+                       lr_finder_steps=200, lr_start=1e-4, lr_end=1000.0):
     
     print(f"🔮 train_ce_alignment: Starting with wandb_prefix='{wandb_prefix}', step_offset={step_offset}")
     print(f"   HAS_WANDB: {HAS_WANDB}")
@@ -584,7 +584,7 @@ def critic_ce_alignment(
     discrim_hidden_dim=64, discrim_layers=5, joint_discrim_layers=None, joint_discrim_hidden_dim=None,
     use_compile=True, test_mode=False, max_test_examples=3000, 
     auto_find_lr=False, lr_finder_steps=200, 
-    lr_start=1e-7, lr_end=1.0,
+                                                                                                                             lr_start=1e-4, lr_end=1000.0,
     enable_extended_metrics=True,
     run_critic_ce_direct=False,
     force_retrain_discriminators=False,

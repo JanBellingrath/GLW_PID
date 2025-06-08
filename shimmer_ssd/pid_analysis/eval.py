@@ -61,8 +61,8 @@ def analyze_model(
     max_test_examples_run: int = 3000, # Renamed for clarity
     auto_find_lr_run: bool = False, # Renamed for clarity
     lr_finder_steps_run: int = 200,
-    lr_start_run: float = 1e-7,
-    lr_end_run: float = 1.0,
+    lr_start_run: float = 1e-4,
+    lr_end_run: float = 1000.0,
     cluster_method_discrim: str = 'gmm', 
     enable_extended_metrics_discrim: bool = True,
     run_critic_ce_direct: bool = False, # New flag to run critic_ce_alignment directly

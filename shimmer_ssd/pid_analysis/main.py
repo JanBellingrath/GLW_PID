@@ -252,9 +252,9 @@ def main():
                        help="Enable LR finder for CE alignment training")
     model_parser.add_argument("--lr-finder-steps", type=int, default=200,
                        help="Number of iterations for LR finder")
-    model_parser.add_argument("--lr-start", type=float, default=1e-7,
+    model_parser.add_argument("--lr-start", type=float, default=1e-4,
                        help="Start LR for finder")
-    model_parser.add_argument("--lr-end", type=float, default=1.0,
+    model_parser.add_argument("--lr-end", type=float, default=1000.0,
                        help="End LR for finder")
     
     # CE test mode parameters
