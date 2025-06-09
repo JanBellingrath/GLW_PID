@@ -70,6 +70,12 @@ def analyze_model(
     enable_extended_metrics_discrim: bool = True,
     run_critic_ce_direct: bool = False, # New flag to run critic_ce_alignment directly
     model_type: str = "complete_MLP",  # New parameter for model architecture type
+    # 🔬 DEBUGGING PARAMETERS
+    debug_gradients: bool = False,
+    debug_weights: bool = False, 
+    debug_numerical: bool = False,
+    debug_verbose: bool = False,
+    debug_interval: int = 100,
     **kwargs
 ) -> Dict[str, Any]:
     """
@@ -415,6 +421,15 @@ def analyze_model(
             num_clusters, ce_layers, "relu",
             d1, d2, d12, p_y_calc
         ).to(global_device)
+        
+        # 🔬 CONFIGURE DEBUGGING
+        ce_model.configure_debugging(
+            debug_gradients=debug_gradients,
+            debug_weights=debug_weights,
+            debug_numerical=debug_numerical,
+            debug_verbose=debug_verbose,
+            debug_interval=debug_interval
+        )
         
         # ========================================
         # 🔥 CE ALIGNMENT TRAINING
@@ -1055,6 +1070,12 @@ def analyze_with_data_interface(
     synthetic_labels: Optional[torch.Tensor] = None,
     model_type: str = "complete_MLP",  # Add model_type parameter
     finish_wandb_run: bool = True,  # Add parameter to control wandb run finishing
+    # 🔬 DEBUGGING PARAMETERS
+    debug_gradients: bool = False,
+    debug_weights: bool = False, 
+    debug_numerical: bool = False,
+    debug_verbose: bool = False,
+    debug_interval: int = 100,
     **kwargs
 ) -> Dict[str, Any]:
     """
@@ -1403,6 +1424,44 @@ def analyze_with_data_interface(
     # ========================================
     
     # Run PID analysis using existing critic_ce_alignment function
+    
+    # 🔧 CREATE PROPER CACHE NAME FOR PRETRAINED ENCODERS 
+    # Extract model path to make cache name specific like regular discriminators
+    model_path_for_cache = getattr(data_interface.data_provider, 'model_path', 'unknown')
+    if hasattr(data_interface.data_provider, 'model_path') and data_interface.data_provider.model_path:
+        # Use the actual model name (e.g., "domain_v" from "/path/to/domain_v.ckpt")
+        cache_model_name = Path(data_interface.data_provider.model_path).stem
+    else:
+        # Fallback to target_config if no model path available
+        cache_model_name = f"data_interface_{target_config}"
+    
+    # Create complete cache name that includes all distinguishing parameters
+    # This matches the detailed naming used in train.py for pretrained discriminators
+    cache_name_params = {
+        'model': cache_model_name,
+        'target': target_config,
+        'dh': discrim_hidden_dim,
+        'dl': discrim_layers,
+        'jdh': joint_discrim_hidden_dim or discrim_hidden_dim,
+        'jdl': joint_discrim_layers or discrim_layers,
+        'ch': ce_hidden_dim,
+        'cl': ce_layers,
+        'ce': ce_embed_dim or ce_hidden_dim,
+        'de': discrim_epochs,
+        'cee': ce_epochs,
+        'nc': num_clusters,
+        'ns': n_samples,
+        'bs': batch_size,
+        'comp': int(kwargs.get('use_compile', True))
+    }
+    
+    # Create a comprehensive cache identifier that matches regular discriminator specificity
+    specific_model_name = f"{cache_name_params['model']}_tgt{cache_name_params['target']}_dh{cache_name_params['dh']}_dl{cache_name_params['dl']}_jh{cache_name_params['jdh']}_jl{cache_name_params['jdl']}_ch{cache_name_params['ch']}_cl{cache_name_params['cl']}_ce{cache_name_params['ce']}_de{cache_name_params['de']}_cee{cache_name_params['cee']}_nc{cache_name_params['nc']}_ns{cache_name_params['ns']}_bs{cache_name_params['bs']}_comp{cache_name_params['comp']}"
+    
+    print(f"🔧 Using specific cache name for pretrained encoders: {specific_model_name}")
+    print(f"   📁 Model path: {model_path_for_cache}")
+    print(f"   🎯 Cache params: {cache_name_params}")
+    
     pid_results = critic_ce_alignment(
         x1=x1,
         x2=x2,
@@ -1413,7 +1472,7 @@ def analyze_with_data_interface(
         discrim_epochs=discrim_epochs,
         ce_epochs=ce_epochs,
         wandb_enabled=use_wandb and HAS_WANDB,
-        model_name=f"data_interface_{target_config}",
+        model_name=specific_model_name,  # 🎯 FIXED: Use specific cache name instead of generic
         discrim_hidden_dim=discrim_hidden_dim,
         discrim_layers=discrim_layers,
         joint_discrim_layers=joint_discrim_layers,
@@ -1427,6 +1486,12 @@ def analyze_with_data_interface(
         model_type=model_type,  # Use the passed/processed model_type
         model=model,            # Pass the extracted model
         domain_names=domain_names,  # Pass the extracted domain names
+        # 🔬 DEBUG PARAMETERS
+        debug_gradients=debug_gradients,
+        debug_weights=debug_weights,
+        debug_numerical=debug_numerical,
+        debug_verbose=debug_verbose,
+        debug_interval=debug_interval,
         **{k: v for k, v in kwargs.items() if k in [
             'use_compile', 'test_mode', 'max_test_examples', 
             'auto_find_lr', 'lr_finder_steps', 'lr_start', 'lr_end'

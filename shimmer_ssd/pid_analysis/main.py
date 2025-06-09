@@ -338,6 +338,21 @@ def main():
     model_parser.add_argument('--hopkins-bootstrap', type=int, default=1000,
                        help='Number of bootstrap samples for Hopkins p-value computation')
     
+    # 🔬 DEBUGGING ARGUMENTS - Control various debugging features
+    debug_group = model_parser.add_argument_group('debugging', 'Debugging and diagnostic options')
+    debug_group.add_argument('--debug-gradients', action='store_true',
+                           help='Enable gradient flow inspection for alignment MLPs')
+    debug_group.add_argument('--debug-weights', action='store_true',
+                           help='Enable weight update checking for alignment MLPs')
+    debug_group.add_argument('--debug-numerical', action='store_true',
+                           help='Enable numerical range inspection (A, P, log_ratio matrices)')
+    debug_group.add_argument('--debug-all', action='store_true',
+                           help='Enable all debugging features (gradients, weights, numerical)')
+    debug_group.add_argument('--debug-interval', type=int, default=100,
+                           help='Interval for debug checks (every N training steps)')
+    debug_group.add_argument('--debug-verbose', action='store_true',
+                           help='Enable verbose debug output with detailed information')
+    
     # New flag for cluster inspection only
     model_parser.add_argument("--only-inspect-clusters", action="store_true",
                           help="Bypass PID analysis to only load data, generate and visualize clusters.")
@@ -375,7 +390,7 @@ def main():
                                 help="Hidden dimension for discriminator")
     synthetic_parser.add_argument("--joint-discrim-hidden-dim", type=int, default=None,
                                 help="Hidden dimension for joint discriminator network (defaults to same as --discrim-hidden-dim if not specified)")
-    synthetic_parser.add_argument("--discrim-layers", type=int, default=3,
+    synthetic_parser.add_argument("--discrim-layers", type=int, default=5,
                                 help="Number of layers for discriminator")
     synthetic_parser.add_argument("--joint-discrim-layers", type=int, default=None,
                                 help="Number of layers for joint discriminator network (defaults to same as --discrim-layers if not specified)")
@@ -640,6 +655,26 @@ def main():
             device = args.device
         
         print(f"🖥 Device: {device}")
+        
+        # 🔬 PROCESS DEBUG ARGUMENTS
+        debug_gradients = args.debug_gradients or args.debug_all
+        debug_weights = args.debug_weights or args.debug_all
+        debug_numerical = args.debug_numerical or args.debug_all
+        debug_verbose = args.debug_verbose
+        debug_interval = args.debug_interval
+        
+        if debug_gradients or debug_weights or debug_numerical:
+            print(f"\n🔬 DEBUGGING ENABLED:")
+            if debug_gradients:
+                print(f"   ✓ Gradient flow inspection")
+            if debug_weights:
+                print(f"   ✓ Weight update checking")
+            if debug_numerical:
+                print(f"   ✓ Numerical range inspection")
+            print(f"   📊 Debug interval: every {debug_interval} steps")
+            if debug_verbose:
+                print(f"   📝 Verbose output enabled")
+            print()  # Extra newline
         
         # Set defaults for joint discriminator parameters if not specified
         if args.joint_discrim_hidden_dim is None:
@@ -906,6 +941,12 @@ def main():
                 cluster_method=args.cluster_method,
                 enable_extended_metrics=not args.disable_extended_metrics,
                 run_critic_ce_direct=args.run_critic_ce_direct,
+                # 🔬 DEBUG PARAMETERS
+                debug_gradients=debug_gradients,
+                debug_weights=debug_weights,
+                debug_numerical=debug_numerical,
+                debug_verbose=debug_verbose,
+                debug_interval=debug_interval,
                 visualize_clusters=args.visualize_clusters,
                 viz_samples_per_cluster=args.viz_samples_per_cluster,
                 viz_grid_size=args.viz_grid_size,
@@ -1112,7 +1153,13 @@ def main():
                 lr_end_run=args.lr_end,
                 enable_extended_metrics_discrim=not args.disable_extended_metrics,
                 cluster_method_discrim=args.cluster_method,  # Pass cluster method
-                model_type=args.model_type
+                model_type=args.model_type,
+                # 🔬 DEBUG PARAMETERS  
+                debug_gradients=debug_gradients,
+                debug_weights=debug_weights,
+                debug_numerical=debug_numerical,
+                debug_verbose=debug_verbose,
+                debug_interval=debug_interval
             )
             
             print(f"\n✅ LATEST CHECKPOINT ANALYSIS COMPLETE!")

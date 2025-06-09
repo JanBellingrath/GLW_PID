@@ -403,6 +403,11 @@ def train_ce_alignment(model: CEAlignmentInformation, loader: DataLoader, optimi
     # Create optimizer with found/default learning rate
     optimizer = optimizer_class(model.parameters(), lr=optimal_lr)
     
+    # IMPORTANT: Reset LR finding mode to enable Sinkhorn visualizations during training
+    if hasattr(model, 'set_lr_finding_mode'):
+        model.set_lr_finding_mode(False)
+        print("🎨 Enabled Sinkhorn-Knopp coupling visualizations for training phase")
+    
     # Training loop
     for epoch in range(num_epoch):
         epoch_loss = 0.0
@@ -622,7 +627,13 @@ def critic_ce_alignment(
     force_retrain_discriminators=False,
     model_type="complete_MLP",
     model=None,
-    domain_names=None
+    domain_names=None,
+    # 🔬 DEBUGGING PARAMETERS
+    debug_gradients=False,
+    debug_weights=False,
+    debug_numerical=False,
+    debug_verbose=False,
+    debug_interval=100
 ):
     """
     Core function for Partial Information Decomposition via Conditional Entropy alignment.
@@ -1262,6 +1273,15 @@ def critic_ce_alignment(
         discrim_12=d12,
         p_y=p_y
     ).to(global_device)
+    
+    # 🔬 CONFIGURE DEBUGGING
+    ce_model.configure_debugging(
+        debug_gradients=debug_gradients,
+        debug_weights=debug_weights,
+        debug_numerical=debug_numerical,
+        debug_verbose=debug_verbose,
+        debug_interval=debug_interval
+    )
     
     # Train CE alignment using the proper train_ce_alignment function
     if ce_epochs > 0:

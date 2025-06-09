@@ -340,7 +340,7 @@ class CEAlignment(nn.Module): #TODO give another name to this class
                 pass  # Gracefully handle missing visualization module
         
         P = torch.stack(couplings, dim=-1)
-        return P
+        return P, A  # Return both coupling matrix and affinity matrix for debugging
 
 class CEAlignmentInformation(nn.Module): #TODO give another name to this class
     def __init__(self, x1_dim, x2_dim, hidden_dim, embed_dim, num_labels,
@@ -391,10 +391,432 @@ class CEAlignmentInformation(nn.Module): #TODO give another name to this class
             
         # Flag to control visualization during LR finding
         self.lr_finding_mode = False
+        
+        # 🔬 DEBUG FLAGS - Control debugging features
+        self.debug_gradients = False
+        self.debug_weights = False  
+        self.debug_numerical = False
+        self.debug_verbose = False
+        self.debug_interval = 100
+        self.debug_step_counter = 0
 
     def set_lr_finding_mode(self, enabled: bool):
         """Enable or disable LR finding mode to control visualization."""
         self.lr_finding_mode = enabled
+    
+    def configure_debugging(self, debug_gradients: bool = False, debug_weights: bool = False, 
+                           debug_numerical: bool = False, debug_verbose: bool = False,
+                           debug_interval: int = 100):
+        """
+        Configure debugging settings for the model.
+        
+        Args:
+            debug_gradients: Enable gradient flow inspection
+            debug_weights: Enable weight update checking  
+            debug_numerical: Enable numerical range inspection
+            debug_verbose: Enable verbose debug output
+            debug_interval: Interval for debug checks (every N steps)
+        """
+        self.debug_gradients = debug_gradients
+        self.debug_weights = debug_weights
+        self.debug_numerical = debug_numerical
+        self.debug_verbose = debug_verbose
+        self.debug_interval = debug_interval
+        self.debug_step_counter = 0
+        
+        if debug_gradients or debug_weights or debug_numerical:
+            print("🔬 Debugging enabled:")
+            if debug_gradients:
+                print("  ✓ Gradient flow inspection")
+            if debug_weights:
+                print("  ✓ Weight update checking")
+            if debug_numerical:
+                print("  ✓ Numerical range inspection")
+            print(f"  📊 Debug interval: every {debug_interval} steps")
+            if debug_verbose:
+                print("  📝 Verbose output enabled")
+    
+    def inspect_alignment_gradients(self, print_details: bool = True):
+        """
+        Inspect gradients flowing into alignment MLPs after loss.backward().
+        Call this method after loss.backward() to check if Sinkhorn blocks autograd.
+        
+        Args:
+            print_details: Whether to print gradient norms to console
+            
+        Returns:
+            Dict with gradient information for debugging
+        """
+        grad_info = {
+            'mlp1_gradients': {},
+            'mlp2_gradients': {},
+            'gradients_present': False,
+            'max_grad_norm': 0.0
+        }
+        
+        # Check MLP1 gradients
+        if print_details:
+            print("=== MLP1 Gradient Inspection ===")
+        for name, param in self.align.mlp1.named_parameters():
+            if param.grad is not None:
+                grad_norm = param.grad.norm().item()
+                grad_info['mlp1_gradients'][name] = grad_norm
+                grad_info['gradients_present'] = True
+                grad_info['max_grad_norm'] = max(grad_info['max_grad_norm'], grad_norm)
+                if print_details:
+                    print(f"  {name}: grad_norm = {grad_norm:.6f}")
+            else:
+                grad_info['mlp1_gradients'][name] = None
+                if print_details:
+                    print(f"  {name}: grad = None")
+        
+        # Check MLP2 gradients  
+        if print_details:
+            print("=== MLP2 Gradient Inspection ===")
+        for name, param in self.align.mlp2.named_parameters():
+            if param.grad is not None:
+                grad_norm = param.grad.norm().item()
+                grad_info['mlp2_gradients'][name] = grad_norm
+                grad_info['gradients_present'] = True
+                grad_info['max_grad_norm'] = max(grad_info['max_grad_norm'], grad_norm)
+                if print_details:
+                    print(f"  {name}: grad_norm = {grad_norm:.6f}")
+            else:
+                grad_info['mlp2_gradients'][name] = None
+                if print_details:
+                    print(f"  {name}: grad = None")
+        
+        # Summary
+        if print_details:
+            print("=== Gradient Flow Summary ===")
+            if grad_info['gradients_present']:
+                print(f"✓ Gradients are flowing! Max norm: {grad_info['max_grad_norm']:.6f}")
+                if grad_info['max_grad_norm'] < 1e-6:
+                    print("⚠️  Warning: Gradient norms are very small - check for vanishing gradients")
+                elif grad_info['max_grad_norm'] > 10.0:
+                    print("⚠️  Warning: Gradient norms are large - check for exploding gradients")
+            else:
+                print("✗ NO GRADIENTS FOUND - Sinkhorn may be blocking autograd!")
+                print("   This indicates the Sinkhorn implementation is not differentiable")
+        
+        return grad_info
+    
+    def inspect_numerical_ranges(self, A, P, log_ratio, print_details: bool = True):
+        """
+        Inspect numerical ranges of affinity matrix, coupling matrix, and log_ratio.
+        Call this to detect overflow/underflow issues that could cause NaN or infinite values.
+        
+        Args:
+            A: Affinity matrix from CEAlignment
+            P: Coupling matrix from Sinkhorn
+            log_ratio: Log ratio for MI calculation
+            print_details: Whether to print ranges to console
+            
+        Returns:
+            Dict with numerical range information for debugging
+        """
+        range_info = {
+            'A_range': (A.min().item(), A.max().item()),
+            'P_range': (P.min().item(), P.max().item()),
+            'log_ratio_range': (log_ratio.min().item(), log_ratio.max().item()),
+            'has_inf': False,
+            'has_nan': False,
+            'numerical_issues': []
+        }
+        
+        # Check for infinities and NaNs
+        if torch.isinf(A).any():
+            range_info['has_inf'] = True
+            range_info['numerical_issues'].append('A contains infinities')
+        if torch.isnan(A).any():
+            range_info['has_nan'] = True
+            range_info['numerical_issues'].append('A contains NaNs')
+            
+        if torch.isinf(P).any():
+            range_info['has_inf'] = True
+            range_info['numerical_issues'].append('P contains infinities')
+        if torch.isnan(P).any():
+            range_info['has_nan'] = True
+            range_info['numerical_issues'].append('P contains NaNs')
+            
+        if torch.isinf(log_ratio).any():
+            range_info['has_inf'] = True
+            range_info['numerical_issues'].append('log_ratio contains infinities')
+        if torch.isnan(log_ratio).any():
+            range_info['has_nan'] = True
+            range_info['numerical_issues'].append('log_ratio contains NaNs')
+        
+        if print_details:
+            print("=== Numerical Range Inspection ===")
+            print(f"A range: [{range_info['A_range'][0]:.6f}, {range_info['A_range'][1]:.6f}]")
+            print(f"P range: [{range_info['P_range'][0]:.6f}, {range_info['P_range'][1]:.6f}]")
+            print(f"log_ratio range: [{range_info['log_ratio_range'][0]:.6f}, {range_info['log_ratio_range'][1]:.6f}]")
+            
+            # Check for extreme values that could cause issues
+            A_min, A_max = range_info['A_range']
+            if A_max > 50:
+                print(f"⚠️  Warning: A_max = {A_max:.2f} is very large (risk of exp overflow)")
+            if A_min < -50:
+                print(f"⚠️  Warning: A_min = {A_min:.2f} is very negative (risk of exp underflow)")
+                
+            P_min, P_max = range_info['P_range']
+            if P_min < 1e-10:
+                print(f"⚠️  Warning: P_min = {P_min:.2e} is very small (risk of log underflow)")
+            if P_max > 1e10:
+                print(f"⚠️  Warning: P_max = {P_max:.2e} is very large")
+                
+            lr_min, lr_max = range_info['log_ratio_range']
+            if abs(lr_min) > 100 or abs(lr_max) > 100:
+                print(f"⚠️  Warning: log_ratio has extreme values (risk of numerical instability)")
+            
+            # Report issues
+            if range_info['numerical_issues']:
+                print("✗ NUMERICAL ISSUES DETECTED:")
+                for issue in range_info['numerical_issues']:
+                    print(f"  - {issue}")
+            else:
+                print("✓ No infinities or NaNs detected")
+        
+        return range_info
+    
+    def capture_alignment_weights(self):
+        """
+        Capture current alignment MLP weights for before/after optimizer comparison.
+        Call this before forward/backward/step to store weights for comparison.
+        
+        Returns:
+            Dict containing cloned weight tensors for comparison
+        """
+        weight_snapshot = {
+            'mlp1_weights': {},
+            'mlp2_weights': {}
+        }
+        
+        # Capture MLP1 weights
+        for name, param in self.align.mlp1.named_parameters():
+            weight_snapshot['mlp1_weights'][name] = param.clone().detach()
+        
+        # Capture MLP2 weights  
+        for name, param in self.align.mlp2.named_parameters():
+            weight_snapshot['mlp2_weights'][name] = param.clone().detach()
+            
+        return weight_snapshot
+    
+    def check_weight_updates(self, weights_before, print_details: bool = True):
+        """
+        Check if alignment MLP weights have been updated after optimizer.step().
+        Call this after optimizer.step() with weights captured before training step.
+        
+        Args:
+            weights_before: Dict from capture_alignment_weights() before optimizer.step()
+            print_details: Whether to print update information to console
+            
+        Returns:
+            Dict with weight update information for debugging
+        """
+        update_info = {
+            'mlp1_updates': {},
+            'mlp2_updates': {},
+            'any_updates': False,
+            'max_change': 0.0,
+            'total_params_updated': 0,
+            'total_params': 0
+        }
+        
+        # Check MLP1 weight updates
+        if print_details:
+            print("=== MLP1 Weight Update Check ===")
+        for name, param in self.align.mlp1.named_parameters():
+            if name in weights_before['mlp1_weights']:
+                before = weights_before['mlp1_weights'][name]
+                after = param.detach()
+                
+                # Check if weights changed
+                weights_changed = not torch.allclose(before, after, atol=1e-8)
+                
+                if weights_changed:
+                    max_change = (after - before).abs().max().item()
+                    mean_change = (after - before).abs().mean().item()
+                    update_info['mlp1_updates'][name] = {
+                        'changed': True,
+                        'max_change': max_change,
+                        'mean_change': mean_change
+                    }
+                    update_info['any_updates'] = True
+                    update_info['max_change'] = max(update_info['max_change'], max_change)
+                    update_info['total_params_updated'] += 1
+                    
+                    if print_details:
+                        print(f"  {name}: ✓ UPDATED (max_change={max_change:.2e}, mean_change={mean_change:.2e})")
+                else:
+                    update_info['mlp1_updates'][name] = {'changed': False}
+                    if print_details:
+                        print(f"  {name}: ✗ NO CHANGE")
+                
+                update_info['total_params'] += 1
+        
+        # Check MLP2 weight updates
+        if print_details:
+            print("=== MLP2 Weight Update Check ===")
+        for name, param in self.align.mlp2.named_parameters():
+            if name in weights_before['mlp2_weights']:
+                before = weights_before['mlp2_weights'][name]
+                after = param.detach()
+                
+                # Check if weights changed
+                weights_changed = not torch.allclose(before, after, atol=1e-8)
+                
+                if weights_changed:
+                    max_change = (after - before).abs().max().item()
+                    mean_change = (after - before).abs().mean().item()
+                    update_info['mlp2_updates'][name] = {
+                        'changed': True,
+                        'max_change': max_change,
+                        'mean_change': mean_change
+                    }
+                    update_info['any_updates'] = True
+                    update_info['max_change'] = max(update_info['max_change'], max_change)
+                    update_info['total_params_updated'] += 1
+                    
+                    if print_details:
+                        print(f"  {name}: ✓ UPDATED (max_change={max_change:.2e}, mean_change={mean_change:.2e})")
+                else:
+                    update_info['mlp2_updates'][name] = {'changed': False}
+                    if print_details:
+                        print(f"  {name}: ✗ NO CHANGE")
+                
+                update_info['total_params'] += 1
+        
+        # Summary
+        if print_details:
+            print("=== Weight Update Summary ===")
+            if update_info['any_updates']:
+                print(f"✓ Weights are being updated! {update_info['total_params_updated']}/{update_info['total_params']} parameter groups changed")
+                print(f"  Max change magnitude: {update_info['max_change']:.2e}")
+                if update_info['max_change'] < 1e-8:
+                    print("  ⚠️  Warning: Changes are very small - check learning rate")
+                elif update_info['max_change'] > 1.0:
+                    print("  ⚠️  Warning: Changes are very large - check learning rate/gradients")
+            else:
+                print("✗ NO WEIGHT UPDATES DETECTED!")
+                print("  Possible causes:")
+                print("  - Alignment parameters not added to optimizer")
+                print("  - optimizer.zero_grad() not called")
+                print("  - optimizer.step() not called")
+                print("  - No gradients flowing (check with inspect_alignment_gradients)")
+                print("  - Learning rate is zero")
+        
+        return update_info
+        
+    def quick_weight_update_check(self, print_details: bool = True):
+        """
+        Simplified check for a single parameter to quickly verify optimizer is working.
+        This mimics the user's suggested check: w0 = param.clone(); ...; torch.allclose(w0, param)
+        
+        Returns:
+            Boolean indicating if weights changed (True = good, False = problem)
+        """
+        # Get first parameter from MLP1
+        first_param = next(self.align.mlp1.parameters())
+        w0 = first_param.clone().detach()
+        
+        if print_details:
+            print("=== Quick Weight Update Check ===")
+            print("Captured first MLP1 parameter before optimization step")
+            print("Run your forward/backward/step cycle, then call this method again with check_after=True")
+        
+        return w0
+    
+    def quick_weight_update_verify(self, w0, print_details: bool = True):
+        """
+        Verify if weights changed after optimization step.
+        
+        Args:
+            w0: Weight tensor captured before optimization (from quick_weight_update_check)
+            
+        Returns:
+            Boolean: True if weights changed (good), False if no change (problem)
+        """
+        first_param = next(self.align.mlp1.parameters())
+        weights_changed = not torch.allclose(w0, first_param, atol=1e-8)
+        
+        if print_details:
+            print("=== Quick Weight Update Verification ===")
+            if weights_changed:
+                max_change = (first_param - w0).abs().max().item()
+                print(f"✓ Weights CHANGED! Max change: {max_change:.2e}")
+                print("  Optimizer is working correctly")
+            else:
+                print("✗ Weights DID NOT CHANGE!")
+                print("  Problem: Optimizer is not updating alignment weights")
+                print("  Check: alignment parameters in optimizer, zero_grad(), step() calls")
+        
+        return weights_changed
+    
+    def debug_training_step(self, before_backward: bool = True, weights_before=None, optimizer=None):
+        """
+        Perform debugging checks during training if enabled.
+        Call this method at different points in your training loop.
+        
+        Args:
+            before_backward: If True, captures weights before backward pass
+                           If False, checks gradients and weight updates after step
+            weights_before: Weights captured before training step (for after checks)
+            optimizer: Optimizer instance (for verification)
+            
+        Returns:
+            weights_before dict if before_backward=True, update info dict if before_backward=False
+        """
+        # Skip if debugging disabled or not at debug interval
+        if not (self.debug_gradients or self.debug_weights):
+            return None
+            
+        if self.debug_step_counter % self.debug_interval != 0:
+            return None
+        
+        if before_backward:
+            # Capture weights before training step
+            if self.debug_weights:
+                return self.capture_alignment_weights()
+            return None
+        else:
+            # Check gradients and weight updates after backward/step
+            results = {}
+            
+            if self.debug_gradients:
+                print(f"\n🔬 [Step {self.debug_step_counter}] Gradient Flow Check:")
+                grad_info = self.inspect_alignment_gradients(print_details=self.debug_verbose)
+                results['gradients'] = grad_info
+            
+            if self.debug_weights and weights_before is not None:
+                print(f"\n🔬 [Step {self.debug_step_counter}] Weight Update Check:")
+                update_info = self.check_weight_updates(weights_before, print_details=self.debug_verbose)
+                results['weights'] = update_info
+                
+                # Quick summary for non-verbose mode
+                if not self.debug_verbose and update_info['any_updates']:
+                    print(f"✅ {update_info['total_params_updated']}/{update_info['total_params']} parameters updated (max change: {update_info['max_change']:.2e})")
+                elif not self.debug_verbose and not update_info['any_updates']:
+                    print("❌ No weight updates detected!")
+            
+            return results
+        
+    def debug_quick_check(self):
+        """
+        Quick debugging check for immediate use - mimics user's suggested approach.
+        Returns weight tensor to check after optimizer step.
+        """
+        if not self.debug_weights:
+            return None
+        return self.quick_weight_update_check(print_details=self.debug_verbose)
+    
+    def debug_quick_verify(self, w0):
+        """
+        Quick verification of weight changes - mimics user's suggested approach.
+        """
+        if not self.debug_weights or w0 is None:
+            return True  # Assume success if debugging disabled
+        return self.quick_weight_update_verify(w0, print_details=self.debug_verbose)
         
     def forward(self, x1, x2, y):
         """
@@ -436,7 +858,6 @@ class CEAlignmentInformation(nn.Module): #TODO give another name to this class
                 # Regular Discrim expects concatenated input
                 p_y_x1x2 = F.softmax(self.discrim_12(torch.cat([x1, x2], dim=-1)), dim=1)  # [batch, num_labels]
         
-        #TODO understand the math here and below (didn't do yet), if complete and correct
         # Calculate unimodal mutual information terms with explicit dtype for numerical stability
         mi_x1_y = torch.sum(p_y_x1 * torch.log(p_y_x1 / self.p_y.unsqueeze(0) + 1e-8), dim=1, dtype=torch.float32)
         mi_x2_y = torch.sum(p_y_x2 * torch.log(p_y_x2 / self.p_y.unsqueeze(0) + 1e-8), dim=1, dtype=torch.float32)
@@ -457,8 +878,8 @@ class CEAlignmentInformation(nn.Module): #TODO give another name to this class
         except ImportError:
             pass  # Gracefully handle missing visualization module
         
-        # Get coupling matrix from align (pass lr_finding_mode to control visualization)
-        P = self.align(x1, x2, p_y_x1, p_y_x2, lr_finding_mode=self.lr_finding_mode)  # [batch, batch, num_labels]
+        # Get coupling matrix and affinity matrix from align (pass lr_finding_mode to control visualization)
+        P, A = self.align(x1, x2, p_y_x1, p_y_x2, lr_finding_mode=self.lr_finding_mode)  # [batch, batch, num_labels]
         
         # 1) Normalize along the label axis to get q̃(y|x1,x2)
         P_cond = P / (P.sum(dim=-1, keepdim=True) + 1e-8)  # [batch, batch, num_labels]
@@ -470,6 +891,16 @@ class CEAlignmentInformation(nn.Module): #TODO give another name to this class
         # Calculate proper log ratio for joint MI
         log_ratio = torch.log(P_cond + 1e-8) - torch.log(p_y_expanded + 1e-8)  # [batch, batch, num_labels]
         
+        # 🔬 DEBUGGING: Conditional numerical range inspection
+        if self.debug_numerical and not self.lr_finding_mode and self.debug_step_counter % self.debug_interval == 0:
+            try:
+                self.inspect_numerical_ranges(A, P, log_ratio, print_details=self.debug_verbose)
+            except Exception as e:
+                print(f"⚠️  Numerical inspection failed: {e}")
+        
+        # Increment debug step counter
+        self.debug_step_counter += 1
+        
         # 3) Compute joint MI by summing over all dimensions, weighted by joint coupling P
         mi_x1x2_y = (P * log_ratio).sum(dim=[1, 2])  # [batch]
         
@@ -477,24 +908,24 @@ class CEAlignmentInformation(nn.Module): #TODO give another name to this class
         mi_discrim_x1x2_y = torch.sum(p_y_x1x2 * torch.log(p_y_x1x2 / self.p_y.unsqueeze(0) + 1e-8), 
                                      dim=1, dtype=torch.float32)
         
-        # Calculate PID components using the Möbius relations
-        # Redundancy = I(X1;Y) + I(X2;Y) - I(X1,X2;Y)
-        redundancy = torch.clamp(mi_x1_y + mi_x2_y - mi_x1x2_y, min=0)
+        # 🔬 CRITICAL MATHEMATICAL CORRECTION: Proper PID computation on scalar MI terms
+        # 1) Compute the global mutual information terms (scalars):
+        I_x1 = mi_x1_y.mean()  # I(X1;Y)
+        I_x2 = mi_x2_y.mean()  # I(X2;Y)
+        I_q = mi_x1x2_y.mean()  # I_q(X1,X2;Y) from coupling
+        I_p = mi_discrim_x1x2_y.mean()  # I_p(X1,X2;Y) from joint discriminator
+        
+        # 2) Apply the Möbius relations on scalars:
+        # Redundancy = I(X1;Y) + I(X2;Y) - I_q(X1,X2;Y)
+        redundancy = torch.clamp(I_x1 + I_x2 - I_q, min=0)
         # Unique1 = I(X1;Y) - Redundancy
-        unique1 = torch.clamp(mi_x1_y - redundancy, min=0)
+        unique1 = torch.clamp(I_x1 - redundancy, min=0)
         # Unique2 = I(X2;Y) - Redundancy
-        unique2 = torch.clamp(mi_x2_y - redundancy, min=0)
+        unique2 = torch.clamp(I_x2 - redundancy, min=0)
+        # Synergy = I_p(X1,X2;Y) - I_q(X1,X2;Y)
+        synergy = torch.clamp(I_p - I_q, min=0)
         
-        # 🔬 CRITICAL MATHEMATICAL CORRECTION 1: Updated Synergy Calculation
-        # Compute the *data* joint‐MI via your joint discriminator
-        mi_p_y_x1x2 = mi_discrim_x1x2_y.mean()
-        mi_q_y_x1x2 = mi_x1x2_y.mean()
-
-        # Synergy = I_p(X1,X2;Y) − I_q(X1,X2;Y)
-        synergy = torch.clamp(mi_p_y_x1x2 - mi_q_y_x1x2, min=0)
-        
-        
-        loss = mi_q_y_x1x2  # Optimize the coupling-based joint MI
+        loss = I_q  # Optimize the coupling-based joint MI
         
         # Final cleanup
         if self.aggressive_cleanup and torch.cuda.is_available():
@@ -502,5 +933,5 @@ class CEAlignmentInformation(nn.Module): #TODO give another name to this class
                 torch.cuda.empty_cache()
         
         # Return loss, PID components, and coupling matrix
-        pid_vals = torch.stack([redundancy.mean(), unique1.mean(), unique2.mean(), synergy])
+        pid_vals = torch.stack([redundancy, unique1, unique2, synergy])
         return loss, pid_vals, P 
