@@ -438,7 +438,10 @@ def log_discriminator_marginals_to_wandb(
     lr_finding_mode: bool = False
 ) -> None:
     """
-    Log marginal distributions from the three discriminator networks to wandb.
+    Log discriminator marginal distributions to wandb with individual-sample metrics.
+    
+    This function computes metrics on each sample individually, then averages the metrics.
+    This preserves individual sample behavior instead of destroying it with batch averaging.
     
     This function visualizes and logs the probability distributions produced by:
     - discrim_1: p(y|x1) - marginal distribution over labels given first domain
@@ -473,11 +476,16 @@ def log_discriminator_marginals_to_wandb(
     # Set up custom metrics for out-of-order logging
     _setup_sinkhorn_wandb_metrics(prefix)
     
-    # Convert tensors to numpy and compute batch averages
+    # Convert tensors to numpy - keep batch dimension for individual sample metrics
     try:
-        p_y_x1_np = p_y_x1.mean(dim=0).detach().cpu().numpy()  # Average over batch -> [num_labels]
-        p_y_x2_np = p_y_x2.mean(dim=0).detach().cpu().numpy()  # Average over batch -> [num_labels] 
-        p_y_x1x2_np = p_y_x1x2.mean(dim=0).detach().cpu().numpy()  # Average over batch -> [num_labels]
+        p_y_x1_batch = p_y_x1.detach().cpu().numpy()    # [batch_size, num_labels]
+        p_y_x2_batch = p_y_x2.detach().cpu().numpy()    # [batch_size, num_labels] 
+        p_y_x1x2_batch = p_y_x1x2.detach().cpu().numpy()  # [batch_size, num_labels]
+        
+        # Compute batch averages for visualization only
+        p_y_x1_avg = p_y_x1_batch.mean(axis=0)     # [num_labels] - averaged for visualization
+        p_y_x2_avg = p_y_x2_batch.mean(axis=0)     # [num_labels] - averaged for visualization
+        p_y_x1x2_avg = p_y_x1x2_batch.mean(axis=0) # [num_labels] - averaged for visualization
         
         if p_y_marginal is not None:
             p_y_np = p_y_marginal.detach().cpu().numpy()  # [num_labels]
@@ -489,10 +497,10 @@ def log_discriminator_marginals_to_wandb(
         return
     
     # Validate shapes
-    num_labels = p_y_x1_np.shape[0]
-    if p_y_x2_np.shape[0] != num_labels or p_y_x1x2_np.shape[0] != num_labels:
-        warnings.warn(f"Inconsistent number of labels: p_y_x1={p_y_x1_np.shape[0]}, "
-                     f"p_y_x2={p_y_x2_np.shape[0]}, p_y_x1x2={p_y_x1x2_np.shape[0]}")
+    batch_size, num_labels = p_y_x1_batch.shape
+    if p_y_x2_batch.shape != (batch_size, num_labels) or p_y_x1x2_batch.shape != (batch_size, num_labels):
+        warnings.warn(f"Inconsistent batch shapes: p_y_x1={p_y_x1_batch.shape}, "
+                     f"p_y_x2={p_y_x2_batch.shape}, p_y_x1x2={p_y_x1x2_batch.shape}")
         return
     
     if p_y_np is not None and p_y_np.shape[0] != num_labels:
@@ -506,82 +514,91 @@ def log_discriminator_marginals_to_wandb(
     if step is not None:
         log_dict[f"{prefix}/sinkhorn_step"] = step
     
-    # Always log lightweight statistics
-    stats = _compute_discriminator_marginal_stats(p_y_x1_np, p_y_x2_np, p_y_x1x2_np, p_y_np)
-    for key, value in stats.items():
+    # Compute metrics on individual samples, then average the metrics
+    individual_stats = _compute_individual_sample_basic_stats(p_y_x1_batch, p_y_x2_batch, p_y_x1x2_batch)
+    for key, value in individual_stats.items():
         log_dict[f"{prefix}/{key}"] = value
     
     # Skip expensive visualizations during LR finding for performance
     if lr_finding_mode:
         # During LR finding, only log basic entropy and uniformity for monitoring
-        log_dict[f"{prefix}/p_y_x1_entropy_lr_finding"] = float(-np.sum(p_y_x1_np * np.log(p_y_x1_np + 1e-10)))
-        log_dict[f"{prefix}/p_y_x2_entropy_lr_finding"] = float(-np.sum(p_y_x2_np * np.log(p_y_x2_np + 1e-10)))
-        log_dict[f"{prefix}/p_y_x1x2_entropy_lr_finding"] = float(-np.sum(p_y_x1x2_np * np.log(p_y_x1x2_np + 1e-10)))
+        log_dict[f"{prefix}/p_y_x1_entropy_lr_finding"] = float(-np.sum(p_y_x1_avg * np.log(p_y_x1_avg + 1e-10)))
+        log_dict[f"{prefix}/p_y_x2_entropy_lr_finding"] = float(-np.sum(p_y_x2_avg * np.log(p_y_x2_avg + 1e-10)))
+        log_dict[f"{prefix}/p_y_x1x2_entropy_lr_finding"] = float(-np.sum(p_y_x1x2_avg * np.log(p_y_x1x2_avg + 1e-10)))
         if step is not None:
             log_dict[f"{prefix}/lr_finding_step"] = step
     else:
-        # Full visualization during normal training/evaluation
+        # Full visualization during normal training/evaluation (use averaged distributions for visualization)
         # Create and log discriminator marginal distributions plot
         marginal_dist_fig = _create_discriminator_marginal_plots(
-            p_y_x1_np, p_y_x2_np, p_y_x1x2_np, p_y_np, cluster_names=cluster_names
+            p_y_x1_avg, p_y_x2_avg, p_y_x1x2_avg, p_y_np, cluster_names=cluster_names
         )
         log_dict[f"{prefix}/marginal_distributions"] = wandb.Image(marginal_dist_fig)
         plt.close(marginal_dist_fig)  # Clean up memory
-        
-        # Create comparison plots showing differences between distributions
-        comparison_fig = _create_discriminator_comparison_plots(
-            p_y_x1_np, p_y_x2_np, p_y_x1x2_np, p_y_np, cluster_names=cluster_names
-        )
-        log_dict[f"{prefix}/distribution_comparisons"] = wandb.Image(comparison_fig)
-        plt.close(comparison_fig)  # Clean up memory
     
     # Log to wandb - now using custom step metrics, no step conflicts!
     wandb.log(log_dict)
 
 
-def _compute_discriminator_marginal_stats(
-    p_y_x1_np: np.ndarray,
-    p_y_x2_np: np.ndarray, 
-    p_y_x1x2_np: np.ndarray,
-    p_y_np: Optional[np.ndarray] = None
+def _compute_individual_sample_basic_stats(
+    p_y_x1_batch: np.ndarray,     # [batch_size, num_labels]
+    p_y_x2_batch: np.ndarray,     # [batch_size, num_labels]
+    p_y_x1x2_batch: np.ndarray   # [batch_size, num_labels]
 ) -> Dict[str, float]:
-    """Compute comprehensive statistics for discriminator marginal distributions."""
+    """
+    Compute basic statistics on individual samples.
+    This preserves individual sample behavior instead of destroying it with batch averaging.
+    """
+    batch_size, num_labels = p_y_x1_batch.shape
     stats = {}
     
-    # Individual distribution statistics
-    for name, dist in [("p_y_x1", p_y_x1_np), ("p_y_x2", p_y_x2_np), ("p_y_x1x2", p_y_x1x2_np)]:
-        stats[f"{name}_entropy"] = float(-np.sum(dist * np.log(dist + 1e-10)))
-        stats[f"{name}_max_prob"] = float(np.max(dist))
-        stats[f"{name}_min_prob"] = float(np.min(dist))
-        stats[f"{name}_std"] = float(np.std(dist))
-        stats[f"{name}_uniformity"] = float(1.0 - np.sum((dist - 1.0/len(dist))**2))  # 1 - sum of squared deviations from uniform
-        stats[f"{name}_dominant_cluster"] = int(np.argmax(dist))
-        stats[f"{name}_concentration"] = float(np.sum(dist**2))  # Concentration measure (inverse Simpson diversity)
+    # Compute metrics for each individual sample
+    distributions = [("p_y_x1", p_y_x1_batch), ("p_y_x2", p_y_x2_batch), ("p_y_x1x2", p_y_x1x2_batch)]
     
-    # Cross-distribution comparisons
-    stats["kl_divergence_x1_vs_x2"] = float(np.sum(p_y_x1_np * np.log((p_y_x1_np + 1e-10) / (p_y_x2_np + 1e-10))))
-    stats["kl_divergence_x1_vs_x1x2"] = float(np.sum(p_y_x1_np * np.log((p_y_x1_np + 1e-10) / (p_y_x1x2_np + 1e-10))))
-    stats["kl_divergence_x2_vs_x1x2"] = float(np.sum(p_y_x2_np * np.log((p_y_x2_np + 1e-10) / (p_y_x1x2_np + 1e-10))))
-    
-    # L2 distances between distributions
-    stats["l2_distance_x1_vs_x2"] = float(np.linalg.norm(p_y_x1_np - p_y_x2_np))
-    stats["l2_distance_x1_vs_x1x2"] = float(np.linalg.norm(p_y_x1_np - p_y_x1x2_np))
-    stats["l2_distance_x2_vs_x1x2"] = float(np.linalg.norm(p_y_x2_np - p_y_x1x2_np))
-    
-    # Cosine similarities
-    def cosine_similarity(a, b):
-        return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-10)
-    
-    stats["cosine_sim_x1_vs_x2"] = float(cosine_similarity(p_y_x1_np, p_y_x2_np))
-    stats["cosine_sim_x1_vs_x1x2"] = float(cosine_similarity(p_y_x1_np, p_y_x1x2_np))
-    stats["cosine_sim_x2_vs_x1x2"] = float(cosine_similarity(p_y_x2_np, p_y_x1x2_np))
-    
-    # If prior p(y) is available, compute comparisons
-    if p_y_np is not None:
-        for name, dist in [("p_y_x1", p_y_x1_np), ("p_y_x2", p_y_x2_np), ("p_y_x1x2", p_y_x1x2_np)]:
-            stats[f"kl_divergence_{name}_vs_prior"] = float(np.sum(dist * np.log((dist + 1e-10) / (p_y_np + 1e-10))))
-            stats[f"l2_distance_{name}_vs_prior"] = float(np.linalg.norm(dist - p_y_np))
-            stats[f"cosine_sim_{name}_vs_prior"] = float(cosine_similarity(dist, p_y_np))
+    for name, batch_dist in distributions:
+        # Individual sample metrics
+        sample_entropies = []
+        sample_max_probs = []
+        sample_min_probs = []
+        sample_stds = []
+        sample_uniformities = []
+        sample_concentrations = []
+        sample_dominant_clusters = []
+        
+        for sample_idx in range(batch_size):
+            sample_dist = batch_dist[sample_idx]  # [num_labels]
+            
+            # Individual sample metrics
+            entropy = -np.sum(sample_dist * np.log(sample_dist + 1e-10))
+            max_prob = np.max(sample_dist)
+            min_prob = np.min(sample_dist)
+            std = np.std(sample_dist)
+            uniformity = 1.0 - np.sum((sample_dist - 1.0/num_labels)**2)  # 1 - sum of squared deviations from uniform
+            concentration = np.sum(sample_dist**2)  # Concentration measure (inverse Simpson diversity)
+            dominant_cluster = np.argmax(sample_dist)
+            
+            sample_entropies.append(entropy)
+            sample_max_probs.append(max_prob)
+            sample_min_probs.append(min_prob)
+            sample_stds.append(std)
+            sample_uniformities.append(uniformity)
+            sample_concentrations.append(concentration)
+            sample_dominant_clusters.append(dominant_cluster)
+        
+        # Average the individual sample metrics
+        stats[f"{name}_entropy"] = float(np.mean(sample_entropies))
+        stats[f"{name}_max_prob"] = float(np.mean(sample_max_probs))
+        stats[f"{name}_min_prob"] = float(np.mean(sample_min_probs))
+        stats[f"{name}_std"] = float(np.mean(sample_stds))
+        stats[f"{name}_uniformity"] = float(np.mean(sample_uniformities))
+        stats[f"{name}_concentration"] = float(np.mean(sample_concentrations))
+        stats[f"{name}_dominant_cluster"] = float(np.mean(sample_dominant_clusters))  # Average dominant cluster index
+        
+        # Additional metrics: variance of individual sample metrics (measure of consistency within each distribution)
+        stats[f"{name}_entropy_std"] = float(np.std(sample_entropies))
+        stats[f"{name}_max_prob_std"] = float(np.std(sample_max_probs))
+        stats[f"{name}_uniformity_std"] = float(np.std(sample_uniformities))
+        stats[f"{name}_concentration_std"] = float(np.std(sample_concentrations))
     
     return stats
 
@@ -678,196 +695,6 @@ def _create_discriminator_marginal_plots(
     
     plt.tight_layout()
     return fig
-
-
-def _create_discriminator_comparison_plots(
-    p_y_x1_np: np.ndarray,
-    p_y_x2_np: np.ndarray,
-    p_y_x1x2_np: np.ndarray,
-    p_y_np: Optional[np.ndarray] = None,
-    cluster_names: Optional[list] = None
-) -> plt.Figure:
-    """Create professional comparison plots showing overlays and differences between discriminator distributions."""
-    _setup_professional_style()
-    
-    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
-    
-    num_labels = len(p_y_x1_np)
-    x_positions = np.arange(num_labels)
-    
-    # Set up cluster names
-    if cluster_names and len(cluster_names) >= num_labels:
-        labels = cluster_names[:num_labels]
-    else:
-        labels = [f'C{i}' for i in range(num_labels)]
-    
-    # Professional color scheme
-    colors = [PROFESSIONAL_COLORS['primary'], PROFESSIONAL_COLORS['secondary'], 
-              PROFESSIONAL_COLORS['tertiary'], PROFESSIONAL_COLORS['quaternary']]
-    
-    # Overlay plot: p(y|x1) vs p(y|x2)
-    width = 0.35
-    bars1 = axes[0, 0].bar(x_positions - width/2, p_y_x1_np, width, alpha=0.8, 
-                          color=colors[0], label='p(y|x₁)', 
-                          edgecolor=PROFESSIONAL_COLORS['text'], linewidth=1.2)
-    bars2 = axes[0, 0].bar(x_positions + width/2, p_y_x2_np, width, alpha=0.8, 
-                          color=colors[1], label='p(y|x₂)', 
-                          edgecolor=PROFESSIONAL_COLORS['text'], linewidth=1.2)
-    
-    axes[0, 0].set_title('Domain Comparison: p(y|x₁) vs p(y|x₂)', 
-                        fontweight='bold', fontsize=13, color=PROFESSIONAL_COLORS['text'], pad=15)
-    axes[0, 0].set_xlabel('Cluster/Label', fontsize=11, fontweight='bold', labelpad=8)
-    axes[0, 0].set_ylabel('Probability', fontsize=11, fontweight='bold', labelpad=8)
-    axes[0, 0].set_xticks(x_positions)
-    
-    # Handle tick labels based on number of clusters
-    if num_labels <= 20:
-        axes[0, 0].set_xticklabels(labels, rotation=45, ha='right', fontsize=9)
-    else:
-        tick_step = max(1, num_labels // 10)
-        axes[0, 0].set_xticks(x_positions[::tick_step])
-        axes[0, 0].set_xticklabels([labels[i] for i in range(0, num_labels, tick_step)], 
-                                  rotation=45, ha='right', fontsize=9)
-    
-    axes[0, 0].legend(fontsize=10, framealpha=0.9)
-    axes[0, 0].grid(axis='y', alpha=0.3, linewidth=0.8)
-    axes[0, 0].set_ylim(bottom=0)
-    
-    # Overlay plot: All three distributions
-    width = 0.25
-    bars1 = axes[0, 1].bar(x_positions - width, p_y_x1_np, width, alpha=0.8, 
-                          color=colors[0], label='p(y|x₁)', 
-                          edgecolor=PROFESSIONAL_COLORS['text'], linewidth=1.2)
-    bars2 = axes[0, 1].bar(x_positions, p_y_x2_np, width, alpha=0.8, 
-                          color=colors[1], label='p(y|x₂)', 
-                          edgecolor=PROFESSIONAL_COLORS['text'], linewidth=1.2)
-    bars3 = axes[0, 1].bar(x_positions + width, p_y_x1x2_np, width, alpha=0.8, 
-                          color=colors[2], label='p(y|x₁,x₂)', 
-                          edgecolor=PROFESSIONAL_COLORS['text'], linewidth=1.2)
-    
-    axes[0, 1].set_title('All Discriminators: p(y|x₁) vs p(y|x₂) vs p(y|x₁,x₂)', 
-                        fontweight='bold', fontsize=13, color=PROFESSIONAL_COLORS['text'], pad=15)
-    axes[0, 1].set_xlabel('Cluster/Label', fontsize=11, fontweight='bold', labelpad=8)
-    axes[0, 1].set_ylabel('Probability', fontsize=11, fontweight='bold', labelpad=8)
-    axes[0, 1].set_xticks(x_positions)
-    
-    if num_labels <= 20:
-        axes[0, 1].set_xticklabels(labels, rotation=45, ha='right', fontsize=9)
-    else:
-        tick_step = max(1, num_labels // 10)
-        axes[0, 1].set_xticks(x_positions[::tick_step])
-        axes[0, 1].set_xticklabels([labels[i] for i in range(0, num_labels, tick_step)], 
-                                  rotation=45, ha='right', fontsize=9)
-    
-    axes[0, 1].legend(fontsize=10, framealpha=0.9)
-    axes[0, 1].grid(axis='y', alpha=0.3, linewidth=0.8)
-    axes[0, 1].set_ylim(bottom=0)
-    
-    # Professional difference plot: p(y|x1,x2) - p(y|x1)
-    diff_x1 = p_y_x1x2_np - p_y_x1_np
-    pos_mask = diff_x1 >= 0
-    neg_mask = diff_x1 < 0
-    
-    # Use professional colors for positive/negative differences
-    pos_color = PROFESSIONAL_COLORS['accent']  # Green for positive
-    neg_color = PROFESSIONAL_COLORS['quaternary']  # Red for negative
-    
-    axes[1, 0].bar(x_positions[pos_mask], diff_x1[pos_mask], alpha=0.8, 
-                  color=pos_color, edgecolor=PROFESSIONAL_COLORS['text'], linewidth=1.2,
-                  label='Positive Δ')
-    axes[1, 0].bar(x_positions[neg_mask], diff_x1[neg_mask], alpha=0.8, 
-                  color=neg_color, edgecolor=PROFESSIONAL_COLORS['text'], linewidth=1.2,
-                  label='Negative Δ')
-    
-    axes[1, 0].axhline(y=0, color=PROFESSIONAL_COLORS['text'], linestyle='-', 
-                      alpha=0.7, linewidth=1.5, label='Baseline')
-    axes[1, 0].set_title('Joint vs First Domain: p(y|x₁,x₂) - p(y|x₁)', 
-                        fontweight='bold', fontsize=13, color=PROFESSIONAL_COLORS['text'], pad=15)
-    axes[1, 0].set_xlabel('Cluster/Label', fontsize=11, fontweight='bold', labelpad=8)
-    axes[1, 0].set_ylabel('Probability Difference', fontsize=11, fontweight='bold', labelpad=8)
-    axes[1, 0].set_xticks(x_positions)
-    
-    if num_labels <= 20:
-        axes[1, 0].set_xticklabels(labels, rotation=45, ha='right', fontsize=9)
-    else:
-        tick_step = max(1, num_labels // 10)
-        axes[1, 0].set_xticks(x_positions[::tick_step])
-        axes[1, 0].set_xticklabels([labels[i] for i in range(0, num_labels, tick_step)], 
-                                  rotation=45, ha='right', fontsize=9)
-    
-    axes[1, 0].grid(axis='y', alpha=0.3, linewidth=0.8)
-    axes[1, 0].legend(fontsize=9, framealpha=0.9)
-    
-    # Professional difference plot: p(y|x1,x2) - p(y|x2)
-    diff_x2 = p_y_x1x2_np - p_y_x2_np
-    pos_mask = diff_x2 >= 0
-    neg_mask = diff_x2 < 0
-    
-    axes[1, 1].bar(x_positions[pos_mask], diff_x2[pos_mask], alpha=0.8, 
-                  color=pos_color, edgecolor=PROFESSIONAL_COLORS['text'], linewidth=1.2,
-                  label='Positive Δ')
-    axes[1, 1].bar(x_positions[neg_mask], diff_x2[neg_mask], alpha=0.8, 
-                  color=neg_color, edgecolor=PROFESSIONAL_COLORS['text'], linewidth=1.2,
-                  label='Negative Δ')
-    
-    axes[1, 1].axhline(y=0, color=PROFESSIONAL_COLORS['text'], linestyle='-', 
-                      alpha=0.7, linewidth=1.5, label='Baseline')
-    axes[1, 1].set_title('Joint vs Second Domain: p(y|x₁,x₂) - p(y|x₂)', 
-                        fontweight='bold', fontsize=13, color=PROFESSIONAL_COLORS['text'], pad=15)
-    axes[1, 1].set_xlabel('Cluster/Label', fontsize=11, fontweight='bold', labelpad=8)
-    axes[1, 1].set_ylabel('Probability Difference', fontsize=11, fontweight='bold', labelpad=8)
-    axes[1, 1].set_xticks(x_positions)
-    
-    if num_labels <= 20:
-        axes[1, 1].set_xticklabels(labels, rotation=45, ha='right', fontsize=9)
-    else:
-        tick_step = max(1, num_labels // 10)
-        axes[1, 1].set_xticks(x_positions[::tick_step])
-        axes[1, 1].set_xticklabels([labels[i] for i in range(0, num_labels, tick_step)], 
-                                  rotation=45, ha='right', fontsize=9)
-    
-    axes[1, 1].grid(axis='y', alpha=0.3, linewidth=0.8)
-    axes[1, 1].legend(fontsize=9, framealpha=0.9)
-    
-    # Add professional borders to all subplots
-    for ax in axes.flat:
-        for spine in ax.spines.values():
-            spine.set_visible(True)
-            spine.set_linewidth(1.2)
-            spine.set_color(PROFESSIONAL_COLORS['text'])
-    
-    plt.suptitle('Discriminator Distribution Comparisons', fontsize=18, fontweight='bold',
-                 color=PROFESSIONAL_COLORS['text'], y=0.95)
-    plt.tight_layout()
-    return fig
-
-
-# Convenience functions for one-liner integration
-def log_discriminator_marginals(
-    p_y_x1: torch.Tensor,
-    p_y_x2: torch.Tensor,
-    p_y_x1x2: torch.Tensor,
-    **kwargs
-) -> None:
-    """
-    One-liner function to log discriminator marginal distributions to wandb.
-    
-    This is the main function to call from PID analysis code to visualize discriminator outputs.
-    
-    Args:
-        p_y_x1: Probability distribution p(y|x1) from first discriminator, shape [batch, num_labels]
-        p_y_x2: Probability distribution p(y|x2) from second discriminator, shape [batch, num_labels]
-        p_y_x1x2: Joint probability distribution p(y|x1,x2) from joint discriminator, shape [batch, num_labels]
-        **kwargs: Additional arguments passed to log_discriminator_marginals_to_wandb
-        
-    Example:
-        # During normal training
-        log_discriminator_marginals(p_y_x1, p_y_x2, p_y_x1x2, step=iteration, prefix="training")
-        
-        # During LR finding (lightweight logging)
-        log_discriminator_marginals(p_y_x1, p_y_x2, p_y_x1x2, lr_finding_mode=True)
-    """
-    log_discriminator_marginals_to_wandb(p_y_x1, p_y_x2, p_y_x1x2, **kwargs)
 
 
 def log_sinkhorn_coupling(coupling_matrix: torch.Tensor, **kwargs) -> None:
