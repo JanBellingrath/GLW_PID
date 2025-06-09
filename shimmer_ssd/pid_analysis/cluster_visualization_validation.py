@@ -1050,7 +1050,8 @@ def run_cluster_validation_from_results(
     domain_modules: Dict,
     analysis_results: Dict[str, Any],
     wandb_run = None,
-    validation_config: Dict[str, Any] = None
+    validation_config: Dict[str, Any] = None,
+    enable_hopkins_test: bool = False
 ) -> Dict[str, Any]:
     """
     Professional interface to run cluster validation using results from PID analysis.
@@ -1072,6 +1073,7 @@ def run_cluster_validation_from_results(
             - 'n_samples': Number of validation samples
             - 'max_clusters': Max clusters to visualize
             - 'samples_per_cluster': Samples per cluster visualization
+        enable_hopkins_test: Whether to perform Hopkins test for clusterability (default: False)
         
     Returns:
         Dictionary with validation results that can be integrated into main results
@@ -1128,6 +1130,7 @@ def run_cluster_validation_from_results(
     print(f"📊 Samples: {n_samples}")
     print(f"🎯 Max Clusters: {max_clusters}")
     print(f"🖼️  Samples per Cluster: {samples_per_cluster}")
+    print(f"🧪 Hopkins Test: {'Enabled' if enable_hopkins_test else 'Disabled'}")
     
     try:
         # Step 1: Load validation images
@@ -1364,41 +1367,49 @@ def run_cluster_validation_from_results(
         print(f"      Least populated cluster: {min_samples} samples")
         print(f"      Coverage: {len(unique_clusters)}/{len(np.unique(cluster_labels))} training clusters have validation samples")
         
-        # Hopkins Test for Clusterability: Perform before cluster visualization
-        print("\n🧪 Hopkins Test: Evaluating clusterability of training data")
+        # Hopkins Test for Clusterability: Perform before cluster visualization (if enabled)
         hopkins_results = None
-        if 'clustering_target_data' in generated_data:
-            clustering_data = generated_data['clustering_target_data']
-            if torch.is_tensor(clustering_data):
-                clustering_numpy = clustering_data.cpu().numpy()
+        if enable_hopkins_test:
+            print("\n🧪 Hopkins Test: Evaluating clusterability of training data")
+            if 'clustering_target_data' in generated_data:
+                clustering_data = generated_data['clustering_target_data']
+                if torch.is_tensor(clustering_data):
+                    clustering_numpy = clustering_data.cpu().numpy()
+                else:
+                    clustering_numpy = np.array(clustering_data)
+                
+                hopkins_n_samples = validation_config.get('hopkins_samples', 150) if validation_config else 150
+                hopkins_n_bootstrap = validation_config.get('hopkins_bootstrap', 1000) if validation_config else 1000
+                hopkins_results = hopkins_test_clusterability(
+                    data=clustering_numpy,
+                    n_samples=min(hopkins_n_samples, len(clustering_numpy) // 10),  # Use up to specified or 10% of data
+                    n_bootstrap=hopkins_n_bootstrap,
+                    wandb_run=wandb_run,
+                    data_name="clustering_target_data"
+                )
+            elif 'gw_rep' in generated_data:
+                print("   📊 Using 'gw_rep' data for Hopkins test")
+                gw_data = generated_data['gw_rep']
+                if torch.is_tensor(gw_data):
+                    gw_numpy = gw_data.cpu().numpy()
+                else:
+                    gw_numpy = np.array(gw_data)
+                
+                hopkins_n_samples = validation_config.get('hopkins_samples', 150) if validation_config else 150
+                hopkins_n_bootstrap = validation_config.get('hopkins_bootstrap', 1000) if validation_config else 1000
+                hopkins_results = hopkins_test_clusterability(
+                    data=gw_numpy,
+                    n_samples=min(hopkins_n_samples, len(gw_numpy) // 10),  # Use up to specified or 10% of data
+                    n_bootstrap=hopkins_n_bootstrap,
+                    wandb_run=wandb_run,
+                    data_name="gw_rep"
+                )
             else:
-                clustering_numpy = np.array(clustering_data)
-            
-            hopkins_results = hopkins_test_clusterability(
-                data=clustering_numpy,
-                n_samples=min(150, len(clustering_numpy) // 10),  # Use up to 150 or 10% of data
-                n_bootstrap=1000,
-                wandb_run=wandb_run,
-                data_name="clustering_target_data"
-            )
-        elif 'gw_rep' in generated_data:
-            print("   📊 Using 'gw_rep' data for Hopkins test")
-            gw_data = generated_data['gw_rep']
-            if torch.is_tensor(gw_data):
-                gw_numpy = gw_data.cpu().numpy()
-            else:
-                gw_numpy = np.array(gw_data)
-            
-            hopkins_results = hopkins_test_clusterability(
-                data=gw_numpy,
-                n_samples=min(150, len(gw_numpy) // 10),  # Use up to 150 or 10% of data
-                n_bootstrap=1000,
-                wandb_run=wandb_run,
-                data_name="gw_rep"
-            )
+                print("   ⚠️  No suitable training data found for Hopkins test")
+                hopkins_results = {"status": "skipped", "reason": "no_training_data"}
         else:
-            print("   ⚠️  No suitable training data found for Hopkins test")
-            hopkins_results = {"status": "skipped", "reason": "no_training_data"}
+            print("\n🧪 Hopkins Test: Skipped (disabled via enable_hopkins_test=False)")
+            hopkins_results = {"status": "disabled", "reason": "disabled_by_user"}
         
         # Step 8: Create cluster visualizations
         print("\n🎨 Step 8: Creating cluster visualizations")
@@ -1498,6 +1509,14 @@ def main():
     parser.add_argument("--no-wandb", action="store_true",
                        help="Disable wandb logging completely")
     
+    # Hopkins test parameters
+    parser.add_argument("--enable-hopkins-test", action="store_true",
+                       help="Enable Hopkins test for clusterability evaluation (default: False)")
+    parser.add_argument("--hopkins-samples", type=int, default=150,
+                       help="Number of samples for Hopkins statistic computation")
+    parser.add_argument("--hopkins-bootstrap", type=int, default=1000,
+                       help="Number of bootstrap samples for Hopkins p-value computation")
+    
     args = parser.parse_args()
     
     # Validate required arguments
@@ -1516,6 +1535,10 @@ def main():
     print(f"Samples: {args.n_samples}")
     print(f"Max Clusters: {args.max_clusters}")
     print(f"Samples per Cluster: {args.samples_per_cluster}")
+    print(f"🧪 Hopkins Test: {'Enabled' if args.enable_hopkins_test else 'Disabled'}")
+    if args.enable_hopkins_test:
+        print(f"   Hopkins Samples: {args.hopkins_samples}")
+        print(f"   Hopkins Bootstrap: {args.hopkins_bootstrap}")
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")

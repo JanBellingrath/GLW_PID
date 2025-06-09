@@ -41,44 +41,84 @@ try:
 except ImportError:
     HAS_WANDB = False
 
+# Professional color scheme and styling constants
+PROFESSIONAL_COLORS = {
+    'primary': '#2E86AB',      # Professional blue
+    'secondary': '#A23B72',    # Deep rose
+    'tertiary': '#F18F01',     # Warm orange  
+    'quaternary': '#C73E1D',   # Deep red
+    'accent': '#4CAF50',       # Success green
+    'background': '#F8F9FA',   # Light background
+    'text': '#2C3E50',         # Dark text
+    'grid': '#BDC3C7',         # Light grid
+    'highlight': '#FFC107',    # Warning yellow
+    'neutral': '#6C757D'       # Neutral gray
+}
+
+def _setup_professional_style():
+    """Setup consistent professional matplotlib styling."""
+    try:
+        plt.style.use('seaborn-v0_8-whitegrid')
+    except:
+        plt.style.use('default')
+    
+    plt.rcParams.update({
+        'figure.facecolor': 'white',
+        'axes.facecolor': 'white',
+        'font.family': 'sans-serif',
+        'font.sans-serif': ['Arial', 'DejaVu Sans', 'Helvetica', 'Liberation Sans'],
+        'font.size': 11,
+        'axes.titlesize': 14,
+        'axes.titleweight': 'bold',
+        'axes.labelsize': 12,
+        'axes.labelweight': 'bold',
+        'xtick.labelsize': 10,
+        'ytick.labelsize': 10,
+        'legend.fontsize': 10,
+        'legend.title_fontsize': 11,
+        'axes.spines.top': False,
+        'axes.spines.right': False,
+        'axes.spines.left': True,
+        'axes.spines.bottom': True,
+        'axes.linewidth': 1.2,
+        'grid.alpha': 0.3,
+        'grid.linewidth': 0.8,
+        'legend.frameon': True,
+        'legend.fancybox': True,
+        'legend.shadow': False,
+        'legend.framealpha': 0.95,
+        'figure.dpi': 100,
+        'savefig.dpi': 300,
+        'savefig.bbox': 'tight',
+        'savefig.facecolor': 'white'
+    })
+
 # Global set to track which Sinkhorn prefixes have been defined
 _DEFINED_SINKHORN_PREFIXES = set()
 
 def _setup_sinkhorn_wandb_metrics(prefix: str = "sinkhorn") -> None:
-    """
-    Set up custom wandb metrics for out-of-order Sinkhorn logging.
-    
-    This function defines custom step metrics that allow the Sinkhorn algorithm
-    to log its internal iteration steps independently of the main training steps,
-    preventing the "step must be monotonically increasing" errors.
-    
-    Args:
-        prefix: Prefix for the Sinkhorn metrics
-    """
+    """Setup custom wandb metrics for a given prefix to allow out-of-order logging."""
     global _DEFINED_SINKHORN_PREFIXES
     
-    if not HAS_WANDB or wandb.run is None or prefix in _DEFINED_SINKHORN_PREFIXES:
+    if not HAS_WANDB or wandb.run is None:
+        return
+    
+    # Only define once per prefix to avoid wandb warnings
+    if prefix in _DEFINED_SINKHORN_PREFIXES:
         return
     
     try:
-        # Define a custom step metric for Sinkhorn iterations
-        step_metric_name = f"{prefix}/sinkhorn_step"
-        
-        # Define the custom step metric
-        wandb.define_metric(step_metric_name)
-        
-        # Define all Sinkhorn metrics to use the custom step
-        # Use glob patterns to catch all Sinkhorn metrics with this prefix
-        wandb.define_metric(f"{prefix}/*", step_metric=step_metric_name)
-        
-        print(f"🎯 Defining custom wandb metrics for Sinkhorn prefix '{prefix}' to allow out-of-order logging...")
-        print(f"   ✅ Defined glob pattern '{prefix}/*' to use custom step metric '{step_metric_name}'")
-        print(f"   📖 Reference: https://wandb.me/define-metric")
-        
+        # Define custom step metric for this prefix
+        wandb.define_metric(f"{prefix}/sinkhorn_step")
+        wandb.define_metric(f"{prefix}/*", step_metric=f"{prefix}/sinkhorn_step")
         _DEFINED_SINKHORN_PREFIXES.add(prefix)
-        
+        # Only print the first few metric definitions to avoid spam
+        if len(_DEFINED_SINKHORN_PREFIXES) <= 3:
+            print(f"🎯 Defining custom wandb metrics for Sinkhorn prefix '{prefix}'")
+        elif len(_DEFINED_SINKHORN_PREFIXES) == 4:
+            print(f"🎯 ... (continuing to define wandb metrics for additional prefixes silently)")
     except Exception as e:
-        warnings.warn(f"Failed to define custom Sinkhorn metrics for wandb prefix '{prefix}': {e}")
+        print(f"⚠️  Warning: Could not define wandb metrics for prefix '{prefix}': {e}")
 
 
 def log_coupling_matrix_to_wandb(
@@ -224,65 +264,164 @@ def _create_coupling_heatmap(
     title_suffix: str = ""
 ) -> plt.Figure:
     """Create a professional heatmap of the coupling matrix."""
-    fig, ax = plt.subplots(figsize=(10, 8))
+    _setup_professional_style()
     
-    # Create heatmap
-    im = ax.imshow(matrix_np, cmap=colormap, aspect='auto', interpolation='nearest')
+    # Choose optimal figure size based on matrix dimensions
+    base_size = max(8, min(16, max(matrix_np.shape) * 0.5))
+    fig, ax = plt.subplots(figsize=(base_size, base_size * 0.85))
     
-    # Add colorbar
-    cbar = plt.colorbar(im, ax=ax, shrink=0.8)
-    cbar.set_label('Coupling Strength', rotation=270, labelpad=20)
+    # Enhanced colormap selection for better visual appeal
+    if colormap == "viridis":
+        cmap = plt.cm.viridis
+    elif colormap == "plasma":
+        cmap = plt.cm.plasma
+    elif colormap == "inferno":
+        cmap = plt.cm.inferno
+    else:
+        cmap = colormap
     
-    # Set labels
+    # Create heatmap with professional styling
+    im = ax.imshow(matrix_np, cmap=cmap, aspect='auto', interpolation='bilinear')
+    
+    # Professional colorbar with better positioning
+    cbar = plt.colorbar(im, ax=ax, shrink=0.8, pad=0.02)
+    cbar.set_label('Coupling Strength', rotation=270, labelpad=25, 
+                   fontsize=12, fontweight='bold')
+    cbar.ax.tick_params(labelsize=10)
+    
+    # Enhanced axis labels and ticks
     if cluster_names and len(cluster_names) >= max(matrix_np.shape):
+        # Use cluster names with better formatting
+        x_labels = cluster_names[:matrix_np.shape[1]]
+        y_labels = cluster_names[:matrix_np.shape[0]]
+        
         ax.set_xticks(range(matrix_np.shape[1]))
         ax.set_yticks(range(matrix_np.shape[0]))
-        ax.set_xticklabels(cluster_names[:matrix_np.shape[1]], rotation=45, ha='right')
-        ax.set_yticklabels(cluster_names[:matrix_np.shape[0]])
+        ax.set_xticklabels(x_labels, rotation=45, ha='right', fontsize=10)
+        ax.set_yticklabels(y_labels, fontsize=10)
+        
+        ax.set_xlabel('Target Clusters', fontsize=12, fontweight='bold', labelpad=10)
+        ax.set_ylabel('Source Clusters', fontsize=12, fontweight='bold', labelpad=10)
     else:
-        ax.set_xlabel('Target Clusters')
-        ax.set_ylabel('Source Clusters')
+        # Generic labels with improved styling
+        ax.set_xlabel('Target Clusters', fontsize=12, fontweight='bold', labelpad=10)
+        ax.set_ylabel('Source Clusters', fontsize=12, fontweight='bold', labelpad=10)
+        
+        # Set fewer ticks for large matrices
+        if matrix_np.shape[0] > 20:
+            tick_step = max(1, matrix_np.shape[0] // 10)
+            ax.set_yticks(range(0, matrix_np.shape[0], tick_step))
+        if matrix_np.shape[1] > 20:
+            tick_step = max(1, matrix_np.shape[1] // 10)
+            ax.set_xticks(range(0, matrix_np.shape[1], tick_step))
     
-    # Add title
-    title = f'Sinkhorn-Knopp Coupling Matrix'
+    # Enhanced title with better formatting
+    title = 'Sinkhorn-Knopp Coupling Matrix'
     if title_suffix:
         title += f' {title_suffix}'
-    ax.set_title(title, fontsize=14, fontweight='bold')
+    ax.set_title(title, fontsize=16, fontweight='bold', pad=20, 
+                 color=PROFESSIONAL_COLORS['text'])
     
-    # Add text annotations for small matrices
+    # Add value annotations for small matrices with better contrast
     if matrix_np.shape[0] <= 10 and matrix_np.shape[1] <= 10:
+        threshold = np.median(matrix_np)  # Better threshold for text color
         for i in range(matrix_np.shape[0]):
             for j in range(matrix_np.shape[1]):
-                text = ax.text(j, i, f'{matrix_np[i, j]:.3f}',
-                             ha="center", va="center", color="white" if matrix_np[i, j] < np.max(matrix_np)/2 else "black")
+                value = matrix_np[i, j]
+                text_color = 'white' if value < threshold else 'black'
+                ax.text(j, i, f'{value:.3f}', ha="center", va="center", 
+                       color=text_color, fontweight='bold', fontsize=9)
+    
+    # Add subtle border around the heatmap
+    for spine in ax.spines.values():
+        spine.set_visible(True)
+        spine.set_linewidth(1.5)
+        spine.set_color(PROFESSIONAL_COLORS['text'])
     
     plt.tight_layout()
     return fig
 
 
 def _create_marginal_plots(matrix_np: np.ndarray, cluster_names: Optional[list] = None) -> plt.Figure:
-    """Create plots showing row and column marginals of the coupling matrix."""
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
+    """Create professional plots showing row and column marginals of the coupling matrix."""
+    _setup_professional_style()
+    
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 6))
     
     # Row marginals (sum over columns)
     row_marginals = np.sum(matrix_np, axis=1)
-    ax1.bar(range(len(row_marginals)), row_marginals, alpha=0.7, color='skyblue')
-    ax1.set_title('Row Marginals (Source Distribution)', fontweight='bold')
-    ax1.set_xlabel('Source Cluster')
-    ax1.set_ylabel('Marginal Probability')
+    x_pos1 = np.arange(len(row_marginals))
+    
+    # Professional bar plot for row marginals
+    bars1 = ax1.bar(x_pos1, row_marginals, alpha=0.8, 
+                    color=PROFESSIONAL_COLORS['primary'],
+                    edgecolor=PROFESSIONAL_COLORS['text'], linewidth=1.2)
+    
+    # Add value labels on top of bars for small numbers of clusters
+    if len(row_marginals) <= 15:
+        for i, (bar, value) in enumerate(zip(bars1, row_marginals)):
+            ax1.text(bar.get_x() + bar.get_width()/2., bar.get_height() + max(row_marginals)*0.01,
+                    f'{value:.3f}', ha='center', va='bottom', fontweight='bold', fontsize=9)
+    
+    ax1.set_title('Row Marginals (Source Distribution)', fontweight='bold', 
+                  fontsize=14, color=PROFESSIONAL_COLORS['text'], pad=15)
+    ax1.set_xlabel('Source Cluster', fontsize=12, fontweight='bold', labelpad=10)
+    ax1.set_ylabel('Marginal Probability', fontsize=12, fontweight='bold', labelpad=10)
+    ax1.grid(axis='y', alpha=0.3, linewidth=0.8)
+    
+    # Set cluster names if available
     if cluster_names and len(cluster_names) >= matrix_np.shape[0]:
-        ax1.set_xticks(range(len(row_marginals)))
-        ax1.set_xticklabels(cluster_names[:len(row_marginals)], rotation=45, ha='right')
+        ax1.set_xticks(x_pos1)
+        ax1.set_xticklabels(cluster_names[:len(row_marginals)], 
+                           rotation=45, ha='right', fontsize=10)
+    else:
+        ax1.set_xticks(x_pos1)
+        if len(row_marginals) > 20:  # Reduce tick density for large matrices
+            tick_step = max(1, len(row_marginals) // 10)
+            ax1.set_xticks(x_pos1[::tick_step])
     
     # Column marginals (sum over rows)
     col_marginals = np.sum(matrix_np, axis=0)
-    ax2.bar(range(len(col_marginals)), col_marginals, alpha=0.7, color='lightcoral')
-    ax2.set_title('Column Marginals (Target Distribution)', fontweight='bold')
-    ax2.set_xlabel('Target Cluster')
-    ax2.set_ylabel('Marginal Probability')
+    x_pos2 = np.arange(len(col_marginals))
+    
+    # Professional bar plot for column marginals
+    bars2 = ax2.bar(x_pos2, col_marginals, alpha=0.8, 
+                    color=PROFESSIONAL_COLORS['secondary'],
+                    edgecolor=PROFESSIONAL_COLORS['text'], linewidth=1.2)
+    
+    # Add value labels on top of bars for small numbers of clusters
+    if len(col_marginals) <= 15:
+        for i, (bar, value) in enumerate(zip(bars2, col_marginals)):
+            ax2.text(bar.get_x() + bar.get_width()/2., bar.get_height() + max(col_marginals)*0.01,
+                    f'{value:.3f}', ha='center', va='bottom', fontweight='bold', fontsize=9)
+    
+    ax2.set_title('Column Marginals (Target Distribution)', fontweight='bold', 
+                  fontsize=14, color=PROFESSIONAL_COLORS['text'], pad=15)
+    ax2.set_xlabel('Target Cluster', fontsize=12, fontweight='bold', labelpad=10)
+    ax2.set_ylabel('Marginal Probability', fontsize=12, fontweight='bold', labelpad=10)
+    ax2.grid(axis='y', alpha=0.3, linewidth=0.8)
+    
+    # Set cluster names if available
     if cluster_names and len(cluster_names) >= matrix_np.shape[1]:
-        ax2.set_xticks(range(len(col_marginals)))
-        ax2.set_xticklabels(cluster_names[:len(col_marginals)], rotation=45, ha='right')
+        ax2.set_xticks(x_pos2)
+        ax2.set_xticklabels(cluster_names[:len(col_marginals)], 
+                           rotation=45, ha='right', fontsize=10)
+    else:
+        ax2.set_xticks(x_pos2)
+        if len(col_marginals) > 20:  # Reduce tick density for large matrices
+            tick_step = max(1, len(col_marginals) // 10)
+            ax2.set_xticks(x_pos2[::tick_step])
+    
+    # Add subtle borders
+    for ax in [ax1, ax2]:
+        for spine in ax.spines.values():
+            spine.set_visible(True)
+            spine.set_linewidth(1.2)
+            spine.set_color(PROFESSIONAL_COLORS['text'])
+    
+    # Add overall title
+    fig.suptitle('Coupling Matrix Marginal Distributions', fontsize=16, fontweight='bold',
+                 color=PROFESSIONAL_COLORS['text'], y=0.98)
     
     plt.tight_layout()
     return fig
@@ -454,17 +593,18 @@ def _create_discriminator_marginal_plots(
     p_y_np: Optional[np.ndarray] = None,
     cluster_names: Optional[list] = None
 ) -> plt.Figure:
-    """Create bar plots showing all discriminator marginal distributions."""
+    """Create professional bar plots showing all discriminator marginal distributions."""
+    _setup_professional_style()
+    
     # Determine number of subplots
     num_plots = 4 if p_y_np is not None else 3
     
     if num_plots == 4:
-        fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+        fig, axes = plt.subplots(2, 2, figsize=(16, 12))
         axes = axes.flatten()
     else:
-        fig, axes_raw = plt.subplots(2, 2, figsize=(15, 10))
+        fig, axes_raw = plt.subplots(2, 2, figsize=(16, 12))
         axes = [axes_raw[0, 0], axes_raw[0, 1], axes_raw[1, 0], axes_raw[1, 1]]
-        # We'll remove the unused subplot later
     
     num_labels = len(p_y_x1_np)
     x_positions = np.arange(num_labels)
@@ -475,47 +615,67 @@ def _create_discriminator_marginal_plots(
     else:
         labels = [f'C{i}' for i in range(num_labels)]
     
-    # Plot p(y|x1) from discriminator 1
-    axes[0].bar(x_positions, p_y_x1_np, alpha=0.8, color='skyblue', edgecolor='darkblue')
-    axes[0].set_title('p(y|x₁) - First Domain Discriminator', fontweight='bold', fontsize=12)
-    axes[0].set_xlabel('Cluster/Label')
-    axes[0].set_ylabel('Probability')
-    axes[0].set_xticks(x_positions)
-    axes[0].set_xticklabels(labels, rotation=45, ha='right')
-    axes[0].grid(axis='y', alpha=0.3)
+    # Professional color scheme for each discriminator
+    colors = [PROFESSIONAL_COLORS['primary'], PROFESSIONAL_COLORS['secondary'], 
+              PROFESSIONAL_COLORS['tertiary'], PROFESSIONAL_COLORS['quaternary']]
     
-    # Plot p(y|x2) from discriminator 2
-    axes[1].bar(x_positions, p_y_x2_np, alpha=0.8, color='lightcoral', edgecolor='darkred')
-    axes[1].set_title('p(y|x₂) - Second Domain Discriminator', fontweight='bold', fontsize=12)
-    axes[1].set_xlabel('Cluster/Label')
-    axes[1].set_ylabel('Probability')
-    axes[1].set_xticks(x_positions)
-    axes[1].set_xticklabels(labels, rotation=45, ha='right')
-    axes[1].grid(axis='y', alpha=0.3)
+    distributions = [
+        (p_y_x1_np, 'p(y|x₁) - First Domain Discriminator', colors[0]),
+        (p_y_x2_np, 'p(y|x₂) - Second Domain Discriminator', colors[1]),
+        (p_y_x1x2_np, 'p(y|x₁,x₂) - Joint Discriminator', colors[2])
+    ]
     
-    # Plot p(y|x1,x2) from joint discriminator
-    axes[2].bar(x_positions, p_y_x1x2_np, alpha=0.8, color='lightgreen', edgecolor='darkgreen')
-    axes[2].set_title('p(y|x₁,x₂) - Joint Discriminator', fontweight='bold', fontsize=12)
-    axes[2].set_xlabel('Cluster/Label')
-    axes[2].set_ylabel('Probability')
-    axes[2].set_xticks(x_positions)
-    axes[2].set_xticklabels(labels, rotation=45, ha='right')
-    axes[2].grid(axis='y', alpha=0.3)
+    if p_y_np is not None:
+        distributions.append((p_y_np, 'p(y) - Prior Marginal Distribution', colors[3]))
     
-    # Plot p(y) prior if available
-    if p_y_np is not None and num_plots == 4:
-        axes[3].bar(x_positions, p_y_np, alpha=0.8, color='orange', edgecolor='darkorange')
-        axes[3].set_title('p(y) - Prior Marginal Distribution', fontweight='bold', fontsize=12)
-        axes[3].set_xlabel('Cluster/Label')
-        axes[3].set_ylabel('Probability')
-        axes[3].set_xticks(x_positions)
-        axes[3].set_xticklabels(labels, rotation=45, ha='right')
-        axes[3].grid(axis='y', alpha=0.3)
-    else:
-        # Remove the unused subplot for 3-plot case
+    for idx, (dist, title, color) in enumerate(distributions):
+        ax = axes[idx]
+        
+        # Create professional bar plot
+        bars = ax.bar(x_positions, dist, alpha=0.85, color=color,
+                     edgecolor=PROFESSIONAL_COLORS['text'], linewidth=1.2)
+        
+        # Add value labels for small number of clusters
+        if num_labels <= 12:
+            for i, (bar, value) in enumerate(zip(bars, dist)):
+                ax.text(bar.get_x() + bar.get_width()/2., bar.get_height() + max(dist)*0.02,
+                       f'{value:.3f}', ha='center', va='bottom', fontweight='bold', fontsize=9)
+        
+        # Professional styling
+        ax.set_title(title, fontweight='bold', fontsize=13, 
+                    color=PROFESSIONAL_COLORS['text'], pad=15)
+        ax.set_xlabel('Cluster/Label', fontsize=11, fontweight='bold', labelpad=8)
+        ax.set_ylabel('Probability', fontsize=11, fontweight='bold', labelpad=8)
+        ax.grid(axis='y', alpha=0.3, linewidth=0.8)
+        
+        # Set labels and ticks
+        ax.set_xticks(x_positions)
+        if num_labels <= 20:
+            ax.set_xticklabels(labels, rotation=45, ha='right', fontsize=9)
+        else:
+            # Reduce tick density for many clusters
+            tick_step = max(1, num_labels // 10)
+            ax.set_xticks(x_positions[::tick_step])
+            ax.set_xticklabels([labels[i] for i in range(0, num_labels, tick_step)], 
+                              rotation=45, ha='right', fontsize=9)
+        
+        # Add subtle borders
+        for spine in ax.spines.values():
+            spine.set_visible(True)
+            spine.set_linewidth(1.2)
+            spine.set_color(PROFESSIONAL_COLORS['text'])
+        
+        # Set y-axis to start from 0 for better comparison
+        ax.set_ylim(bottom=0)
+    
+    # Remove unused subplot if only 3 distributions
+    if num_plots == 3:
         fig.delaxes(axes[3])
     
-    plt.suptitle('Discriminator Marginal Distributions', fontsize=16, fontweight='bold')
+    # Professional overall title
+    plt.suptitle('Discriminator Marginal Distributions', fontsize=18, fontweight='bold',
+                 color=PROFESSIONAL_COLORS['text'], y=0.95)
+    
     plt.tight_layout()
     return fig
 
@@ -527,8 +687,10 @@ def _create_discriminator_comparison_plots(
     p_y_np: Optional[np.ndarray] = None,
     cluster_names: Optional[list] = None
 ) -> plt.Figure:
-    """Create comparison plots showing overlays and differences between discriminator distributions."""
-    fig, axes = plt.subplots(2, 2, figsize=(15, 10))
+    """Create professional comparison plots showing overlays and differences between discriminator distributions."""
+    _setup_professional_style()
+    
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
     
     num_labels = len(p_y_x1_np)
     x_positions = np.arange(num_labels)
@@ -539,56 +701,143 @@ def _create_discriminator_comparison_plots(
     else:
         labels = [f'C{i}' for i in range(num_labels)]
     
+    # Professional color scheme
+    colors = [PROFESSIONAL_COLORS['primary'], PROFESSIONAL_COLORS['secondary'], 
+              PROFESSIONAL_COLORS['tertiary'], PROFESSIONAL_COLORS['quaternary']]
+    
     # Overlay plot: p(y|x1) vs p(y|x2)
     width = 0.35
-    axes[0, 0].bar(x_positions - width/2, p_y_x1_np, width, alpha=0.7, color='skyblue', label='p(y|x₁)', edgecolor='darkblue')
-    axes[0, 0].bar(x_positions + width/2, p_y_x2_np, width, alpha=0.7, color='lightcoral', label='p(y|x₂)', edgecolor='darkred')
-    axes[0, 0].set_title('Domain Comparison: p(y|x₁) vs p(y|x₂)', fontweight='bold')
-    axes[0, 0].set_xlabel('Cluster/Label')
-    axes[0, 0].set_ylabel('Probability')
+    bars1 = axes[0, 0].bar(x_positions - width/2, p_y_x1_np, width, alpha=0.8, 
+                          color=colors[0], label='p(y|x₁)', 
+                          edgecolor=PROFESSIONAL_COLORS['text'], linewidth=1.2)
+    bars2 = axes[0, 0].bar(x_positions + width/2, p_y_x2_np, width, alpha=0.8, 
+                          color=colors[1], label='p(y|x₂)', 
+                          edgecolor=PROFESSIONAL_COLORS['text'], linewidth=1.2)
+    
+    axes[0, 0].set_title('Domain Comparison: p(y|x₁) vs p(y|x₂)', 
+                        fontweight='bold', fontsize=13, color=PROFESSIONAL_COLORS['text'], pad=15)
+    axes[0, 0].set_xlabel('Cluster/Label', fontsize=11, fontweight='bold', labelpad=8)
+    axes[0, 0].set_ylabel('Probability', fontsize=11, fontweight='bold', labelpad=8)
     axes[0, 0].set_xticks(x_positions)
-    axes[0, 0].set_xticklabels(labels, rotation=45, ha='right')
-    axes[0, 0].legend()
-    axes[0, 0].grid(axis='y', alpha=0.3)
+    
+    # Handle tick labels based on number of clusters
+    if num_labels <= 20:
+        axes[0, 0].set_xticklabels(labels, rotation=45, ha='right', fontsize=9)
+    else:
+        tick_step = max(1, num_labels // 10)
+        axes[0, 0].set_xticks(x_positions[::tick_step])
+        axes[0, 0].set_xticklabels([labels[i] for i in range(0, num_labels, tick_step)], 
+                                  rotation=45, ha='right', fontsize=9)
+    
+    axes[0, 0].legend(fontsize=10, framealpha=0.9)
+    axes[0, 0].grid(axis='y', alpha=0.3, linewidth=0.8)
+    axes[0, 0].set_ylim(bottom=0)
     
     # Overlay plot: All three distributions
     width = 0.25
-    axes[0, 1].bar(x_positions - width, p_y_x1_np, width, alpha=0.7, color='skyblue', label='p(y|x₁)', edgecolor='darkblue')
-    axes[0, 1].bar(x_positions, p_y_x2_np, width, alpha=0.7, color='lightcoral', label='p(y|x₂)', edgecolor='darkred')
-    axes[0, 1].bar(x_positions + width, p_y_x1x2_np, width, alpha=0.7, color='lightgreen', label='p(y|x₁,x₂)', edgecolor='darkgreen')
-    axes[0, 1].set_title('All Discriminators: p(y|x₁) vs p(y|x₂) vs p(y|x₁,x₂)', fontweight='bold')
-    axes[0, 1].set_xlabel('Cluster/Label')
-    axes[0, 1].set_ylabel('Probability')
+    bars1 = axes[0, 1].bar(x_positions - width, p_y_x1_np, width, alpha=0.8, 
+                          color=colors[0], label='p(y|x₁)', 
+                          edgecolor=PROFESSIONAL_COLORS['text'], linewidth=1.2)
+    bars2 = axes[0, 1].bar(x_positions, p_y_x2_np, width, alpha=0.8, 
+                          color=colors[1], label='p(y|x₂)', 
+                          edgecolor=PROFESSIONAL_COLORS['text'], linewidth=1.2)
+    bars3 = axes[0, 1].bar(x_positions + width, p_y_x1x2_np, width, alpha=0.8, 
+                          color=colors[2], label='p(y|x₁,x₂)', 
+                          edgecolor=PROFESSIONAL_COLORS['text'], linewidth=1.2)
+    
+    axes[0, 1].set_title('All Discriminators: p(y|x₁) vs p(y|x₂) vs p(y|x₁,x₂)', 
+                        fontweight='bold', fontsize=13, color=PROFESSIONAL_COLORS['text'], pad=15)
+    axes[0, 1].set_xlabel('Cluster/Label', fontsize=11, fontweight='bold', labelpad=8)
+    axes[0, 1].set_ylabel('Probability', fontsize=11, fontweight='bold', labelpad=8)
     axes[0, 1].set_xticks(x_positions)
-    axes[0, 1].set_xticklabels(labels, rotation=45, ha='right')
-    axes[0, 1].legend()
-    axes[0, 1].grid(axis='y', alpha=0.3)
     
-    # Difference plot: p(y|x1,x2) - p(y|x1)
+    if num_labels <= 20:
+        axes[0, 1].set_xticklabels(labels, rotation=45, ha='right', fontsize=9)
+    else:
+        tick_step = max(1, num_labels // 10)
+        axes[0, 1].set_xticks(x_positions[::tick_step])
+        axes[0, 1].set_xticklabels([labels[i] for i in range(0, num_labels, tick_step)], 
+                                  rotation=45, ha='right', fontsize=9)
+    
+    axes[0, 1].legend(fontsize=10, framealpha=0.9)
+    axes[0, 1].grid(axis='y', alpha=0.3, linewidth=0.8)
+    axes[0, 1].set_ylim(bottom=0)
+    
+    # Professional difference plot: p(y|x1,x2) - p(y|x1)
     diff_x1 = p_y_x1x2_np - p_y_x1_np
-    colors_x1 = ['red' if d < 0 else 'green' for d in diff_x1]
-    axes[1, 0].bar(x_positions, diff_x1, alpha=0.7, color=colors_x1)
-    axes[1, 0].axhline(y=0, color='black', linestyle='-', alpha=0.5)
-    axes[1, 0].set_title('Joint vs First Domain: p(y|x₁,x₂) - p(y|x₁)', fontweight='bold')
-    axes[1, 0].set_xlabel('Cluster/Label')
-    axes[1, 0].set_ylabel('Probability Difference')
+    pos_mask = diff_x1 >= 0
+    neg_mask = diff_x1 < 0
+    
+    # Use professional colors for positive/negative differences
+    pos_color = PROFESSIONAL_COLORS['accent']  # Green for positive
+    neg_color = PROFESSIONAL_COLORS['quaternary']  # Red for negative
+    
+    axes[1, 0].bar(x_positions[pos_mask], diff_x1[pos_mask], alpha=0.8, 
+                  color=pos_color, edgecolor=PROFESSIONAL_COLORS['text'], linewidth=1.2,
+                  label='Positive Δ')
+    axes[1, 0].bar(x_positions[neg_mask], diff_x1[neg_mask], alpha=0.8, 
+                  color=neg_color, edgecolor=PROFESSIONAL_COLORS['text'], linewidth=1.2,
+                  label='Negative Δ')
+    
+    axes[1, 0].axhline(y=0, color=PROFESSIONAL_COLORS['text'], linestyle='-', 
+                      alpha=0.7, linewidth=1.5, label='Baseline')
+    axes[1, 0].set_title('Joint vs First Domain: p(y|x₁,x₂) - p(y|x₁)', 
+                        fontweight='bold', fontsize=13, color=PROFESSIONAL_COLORS['text'], pad=15)
+    axes[1, 0].set_xlabel('Cluster/Label', fontsize=11, fontweight='bold', labelpad=8)
+    axes[1, 0].set_ylabel('Probability Difference', fontsize=11, fontweight='bold', labelpad=8)
     axes[1, 0].set_xticks(x_positions)
-    axes[1, 0].set_xticklabels(labels, rotation=45, ha='right')
-    axes[1, 0].grid(axis='y', alpha=0.3)
     
-    # Difference plot: p(y|x1,x2) - p(y|x2)
+    if num_labels <= 20:
+        axes[1, 0].set_xticklabels(labels, rotation=45, ha='right', fontsize=9)
+    else:
+        tick_step = max(1, num_labels // 10)
+        axes[1, 0].set_xticks(x_positions[::tick_step])
+        axes[1, 0].set_xticklabels([labels[i] for i in range(0, num_labels, tick_step)], 
+                                  rotation=45, ha='right', fontsize=9)
+    
+    axes[1, 0].grid(axis='y', alpha=0.3, linewidth=0.8)
+    axes[1, 0].legend(fontsize=9, framealpha=0.9)
+    
+    # Professional difference plot: p(y|x1,x2) - p(y|x2)
     diff_x2 = p_y_x1x2_np - p_y_x2_np
-    colors_x2 = ['red' if d < 0 else 'green' for d in diff_x2]
-    axes[1, 1].bar(x_positions, diff_x2, alpha=0.7, color=colors_x2)
-    axes[1, 1].axhline(y=0, color='black', linestyle='-', alpha=0.5)
-    axes[1, 1].set_title('Joint vs Second Domain: p(y|x₁,x₂) - p(y|x₂)', fontweight='bold')
-    axes[1, 1].set_xlabel('Cluster/Label')
-    axes[1, 1].set_ylabel('Probability Difference')
-    axes[1, 1].set_xticks(x_positions)
-    axes[1, 1].set_xticklabels(labels, rotation=45, ha='right')
-    axes[1, 1].grid(axis='y', alpha=0.3)
+    pos_mask = diff_x2 >= 0
+    neg_mask = diff_x2 < 0
     
-    plt.suptitle('Discriminator Distribution Comparisons', fontsize=16, fontweight='bold')
+    axes[1, 1].bar(x_positions[pos_mask], diff_x2[pos_mask], alpha=0.8, 
+                  color=pos_color, edgecolor=PROFESSIONAL_COLORS['text'], linewidth=1.2,
+                  label='Positive Δ')
+    axes[1, 1].bar(x_positions[neg_mask], diff_x2[neg_mask], alpha=0.8, 
+                  color=neg_color, edgecolor=PROFESSIONAL_COLORS['text'], linewidth=1.2,
+                  label='Negative Δ')
+    
+    axes[1, 1].axhline(y=0, color=PROFESSIONAL_COLORS['text'], linestyle='-', 
+                      alpha=0.7, linewidth=1.5, label='Baseline')
+    axes[1, 1].set_title('Joint vs Second Domain: p(y|x₁,x₂) - p(y|x₂)', 
+                        fontweight='bold', fontsize=13, color=PROFESSIONAL_COLORS['text'], pad=15)
+    axes[1, 1].set_xlabel('Cluster/Label', fontsize=11, fontweight='bold', labelpad=8)
+    axes[1, 1].set_ylabel('Probability Difference', fontsize=11, fontweight='bold', labelpad=8)
+    axes[1, 1].set_xticks(x_positions)
+    
+    if num_labels <= 20:
+        axes[1, 1].set_xticklabels(labels, rotation=45, ha='right', fontsize=9)
+    else:
+        tick_step = max(1, num_labels // 10)
+        axes[1, 1].set_xticks(x_positions[::tick_step])
+        axes[1, 1].set_xticklabels([labels[i] for i in range(0, num_labels, tick_step)], 
+                                  rotation=45, ha='right', fontsize=9)
+    
+    axes[1, 1].grid(axis='y', alpha=0.3, linewidth=0.8)
+    axes[1, 1].legend(fontsize=9, framealpha=0.9)
+    
+    # Add professional borders to all subplots
+    for ax in axes.flat:
+        for spine in ax.spines.values():
+            spine.set_visible(True)
+            spine.set_linewidth(1.2)
+            spine.set_color(PROFESSIONAL_COLORS['text'])
+    
+    plt.suptitle('Discriminator Distribution Comparisons', fontsize=18, fontweight='bold',
+                 color=PROFESSIONAL_COLORS['text'], y=0.95)
     plt.tight_layout()
     return fig
 

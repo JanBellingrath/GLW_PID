@@ -50,6 +50,9 @@ def analyze_model(
     discrim_layers: int = 5,
     joint_discrim_layers: int = None,
     joint_discrim_hidden_dim: int = None,
+    ce_hidden_dim: int = 64,
+    ce_layers: int = 3,
+    ce_embed_dim: int = None,
     use_wandb: bool = True,
     wandb_project: str = "pid-analysis",
     wandb_entity: Optional[str] = None,
@@ -60,9 +63,9 @@ def analyze_model(
     ce_test_mode_run: bool = False, # Renamed for clarity
     max_test_examples_run: int = 3000, # Renamed for clarity
     auto_find_lr_run: bool = False, # Renamed for clarity
-    lr_finder_steps_run: int = 200,
-    lr_start_run: float = 1e-4,
-    lr_end_run: float = 1000.0,
+    lr_finder_steps_run: int = 500,
+    lr_start_run: float = 1e-9,
+    lr_end_run: float = 1e5,
     cluster_method_discrim: str = 'gmm', 
     enable_extended_metrics_discrim: bool = True,
     run_critic_ce_direct: bool = False, # New flag to run critic_ce_alignment directly
@@ -198,6 +201,7 @@ def analyze_model(
             wandb_enabled=(use_wandb and HAS_WANDB and wandb_run is not None), model_name=Path(model_path).stem,
             discrim_hidden_dim=discrim_hidden_dim, discrim_layers=discrim_layers,
             joint_discrim_layers=joint_discrim_layers, joint_discrim_hidden_dim=joint_discrim_hidden_dim,
+            ce_hidden_dim=ce_hidden_dim, ce_layers=ce_layers, ce_embed_dim=ce_embed_dim,
             use_compile=use_compile_torch, 
             test_mode=ce_test_mode_run, max_test_examples=max_test_examples_run,
             auto_find_lr=auto_find_lr_run, lr_finder_steps=lr_finder_steps_run,
@@ -402,9 +406,13 @@ def analyze_model(
             p_y_calc = one_hot_py.sum(dim=0) / (one_hot_py.size(0) + 1e-9)
             p_y_calc = p_y_calc.to(global_device)
 
+        # Set default for CE embed_dim if not specified
+        if ce_embed_dim is None:
+            ce_embed_dim = ce_hidden_dim
+        
         ce_model = CEAlignmentInformation(
-            x1_data.size(1), x2_data.size(1), discrim_hidden_dim, discrim_hidden_dim,
-            num_clusters, discrim_layers, "relu",
+            x1_data.size(1), x2_data.size(1), ce_hidden_dim, ce_embed_dim,
+            num_clusters, ce_layers, "relu",
             d1, d2, d12, p_y_calc
         ).to(global_device)
         
@@ -763,6 +771,9 @@ def analyze_multiple_models_from_list(
     discrim_layers: int = 5,
     joint_discrim_layers: int = None,
     joint_discrim_hidden_dim: int = None,
+    ce_hidden_dim: int = 64,
+    ce_layers: int = 3,
+    ce_embed_dim: int = None,
     use_wandb: bool = True,
     wandb_project: str = "pid-analysis",
     wandb_entity: Optional[str] = None,
@@ -789,6 +800,9 @@ def analyze_multiple_models_from_list(
         discrim_layers: Number of layers in discriminator networks
         joint_discrim_layers: Number of layers in joint discriminator network
         joint_discrim_hidden_dim: Hidden dimension for joint discriminator network
+        ce_hidden_dim: Hidden dimension for CE alignment networks
+        ce_layers: Number of layers in CE alignment networks
+        ce_embed_dim: Embedding dimension for CE alignment networks
         use_wandb: Whether to log results to Weights & Biases
         wandb_project: W&B project name
         wandb_entity: W&B entity name
@@ -829,6 +843,9 @@ def analyze_multiple_models_from_list(
                     "discrim_layers": discrim_layers,
                     "joint_discrim_layers": joint_discrim_layers,
                     "joint_discrim_hidden_dim": joint_discrim_hidden_dim,
+                    "ce_hidden_dim": ce_hidden_dim,
+                    "ce_layers": ce_layers,
+                    "ce_embed_dim": ce_embed_dim,
                     "data_source": "dataset" if data_module else "synthetic",
                     "use_gw_encoded": use_gw_encoded,
                     "use_compile": use_compile,
@@ -1029,6 +1046,9 @@ def analyze_with_data_interface(
     discrim_layers: int = 5,
     joint_discrim_layers: int = None,
     joint_discrim_hidden_dim: int = None,
+    ce_hidden_dim: int = 64,
+    ce_layers: int = 3,
+    ce_embed_dim: int = None,
     use_wandb: bool = True,
     wandb_project: str = "pid-analysis",
     wandb_entity: Optional[str] = None,
@@ -1054,6 +1074,9 @@ def analyze_with_data_interface(
         discrim_layers: Number of layers for discriminator
         joint_discrim_layers: Number of layers for joint discriminator
         joint_discrim_hidden_dim: Hidden dimension for joint discriminator
+        ce_hidden_dim: Hidden dimension for CE alignment networks
+        ce_layers: Number of layers for CE alignment networks
+        ce_embed_dim: Embedding dimension for CE alignment networks
         use_wandb: Whether to use Weights & Biases logging
         wandb_project: W&B project name
         wandb_entity: W&B entity name
@@ -1170,6 +1193,9 @@ def analyze_with_data_interface(
                 'discrim_layers': discrim_layers,
                 'joint_discrim_layers': joint_discrim_layers,
                 'joint_discrim_hidden_dim': joint_discrim_hidden_dim,
+                'ce_hidden_dim': ce_hidden_dim,
+                'ce_layers': ce_layers,
+                'ce_embed_dim': ce_embed_dim,
                 'model_type': model_type,  # Add model_type to config
                 'source_config': source_config,
                 'target_config': target_config,
@@ -1392,6 +1418,9 @@ def analyze_with_data_interface(
         discrim_layers=discrim_layers,
         joint_discrim_layers=joint_discrim_layers,
         joint_discrim_hidden_dim=joint_discrim_hidden_dim,
+        ce_hidden_dim=ce_hidden_dim,
+        ce_layers=ce_layers,
+        ce_embed_dim=ce_embed_dim,
         enable_extended_metrics=kwargs.get('enable_extended_metrics', True),
         run_critic_ce_direct=kwargs.get('run_critic_ce_direct', False),
         force_retrain_discriminators=kwargs.get('force_retrain_discriminators', False),
@@ -1415,6 +1444,13 @@ def analyze_with_data_interface(
             'num_clusters': num_clusters,
             'discrim_epochs': discrim_epochs,
             'ce_epochs': ce_epochs,
+            'discrim_hidden_dim': discrim_hidden_dim,
+            'discrim_layers': discrim_layers,
+            'joint_discrim_hidden_dim': joint_discrim_hidden_dim,
+            'joint_discrim_layers': joint_discrim_layers,
+            'ce_hidden_dim': ce_hidden_dim,
+            'ce_layers': ce_layers,
+            'ce_embed_dim': ce_embed_dim,
             'model_type': model_type,  # Include actual model_type used
         },
         # Add cluster validation data

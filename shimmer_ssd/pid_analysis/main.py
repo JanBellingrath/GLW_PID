@@ -222,6 +222,8 @@ def main():
                        help="Number of epochs to train discriminators")
     model_parser.add_argument("--ce-epochs", type=int, default=10,
                        help="Number of epochs to train CE alignment")
+    
+    # Discriminator network parameters
     model_parser.add_argument("--discrim-hidden-dim", type=int, default=64,
                        help="Hidden dimension for discriminator networks")
     model_parser.add_argument("--joint-discrim-hidden-dim", type=int, default=None,
@@ -230,6 +232,14 @@ def main():
                        help="Number of layers in discriminator networks")
     model_parser.add_argument("--joint-discrim-layers", type=int, default=None,
                        help="Number of layers in joint discriminator network (defaults to same as --discrim-layers if not specified)")
+    
+    # CE alignment network parameters
+    model_parser.add_argument("--ce-hidden-dim", type=int, default=32,
+                       help="Hidden dimension for CE alignment networks")
+    model_parser.add_argument("--ce-layers", type=int, default=3,
+                       help="Number of layers in CE alignment networks")
+    model_parser.add_argument("--ce-embed-dim", type=int, default=None,
+                       help="Embedding dimension for CE alignment networks (defaults to same as --ce-hidden-dim if not specified)")
     
     # Performance and optimization
     model_parser.add_argument("--device", type=str, default=None,
@@ -250,11 +260,11 @@ def main():
     # Learning rate finder parameters
     model_parser.add_argument("--auto-find-lr", action="store_true",
                        help="Enable LR finder for CE alignment training")
-    model_parser.add_argument("--lr-finder-steps", type=int, default=200,
+    model_parser.add_argument("--lr-finder-steps", type=int, default=500,
                        help="Number of iterations for LR finder")
-    model_parser.add_argument("--lr-start", type=float, default=1e-4,
+    model_parser.add_argument("--lr-start", type=float, default=1e-9,
                        help="Start LR for finder")
-    model_parser.add_argument("--lr-end", type=float, default=1000.0,
+    model_parser.add_argument("--lr-end", type=float, default=1e5,
                        help="End LR for finder")
     
     # CE test mode parameters
@@ -369,6 +379,12 @@ def main():
                                 help="Number of layers for discriminator")
     synthetic_parser.add_argument("--joint-discrim-layers", type=int, default=None,
                                 help="Number of layers for joint discriminator network (defaults to same as --discrim-layers if not specified)")
+    synthetic_parser.add_argument("--ce-hidden-dim", type=int, default=32,
+                                help="Hidden dimension for CE alignment networks")
+    synthetic_parser.add_argument("--ce-layers", type=int, default=3,
+                                help="Number of layers in CE alignment networks")
+    synthetic_parser.add_argument("--ce-embed-dim", type=int, default=None,
+                                help="Embedding dimension for CE alignment networks (defaults to same as --ce-hidden-dim if not specified)")
     synthetic_parser.add_argument("--model-type", type=str, default="complete_MLP", help=argparse.SUPPRESS)
     synthetic_parser.add_argument("--wandb", action="store_true",
                                 help="Enable Weights & Biases logging")
@@ -408,6 +424,10 @@ def main():
             args.joint_discrim_hidden_dim = args.discrim_hidden_dim
         if args.joint_discrim_layers is None:
             args.joint_discrim_layers = args.discrim_layers
+        
+        # Set default for CE parameters if not specified
+        if args.ce_embed_dim is None:
+            args.ce_embed_dim = args.ce_hidden_dim
             
         print("\n" + "="*60)
         print("🧪 PID ANALYSIS - SYNTHETIC BOOLEAN FUNCTIONS")
@@ -463,6 +483,9 @@ def main():
                     joint_discrim_hidden_dim=args.joint_discrim_hidden_dim,
                     discrim_layers=args.discrim_layers,
                     joint_discrim_layers=args.joint_discrim_layers,
+                    ce_hidden_dim=args.ce_hidden_dim,
+                    ce_layers=args.ce_layers,
+                    ce_embed_dim=args.ce_embed_dim,
                     # Pass provider-specific kwargs
                     model_type=args.model_type
                 )
@@ -617,6 +640,16 @@ def main():
             device = args.device
         
         print(f"🖥 Device: {device}")
+        
+        # Set defaults for joint discriminator parameters if not specified
+        if args.joint_discrim_hidden_dim is None:
+            args.joint_discrim_hidden_dim = args.discrim_hidden_dim
+        if args.joint_discrim_layers is None:
+            args.joint_discrim_layers = args.discrim_layers
+        
+        # Set defaults for CE parameters if not specified
+        if args.ce_embed_dim is None:
+            args.ce_embed_dim = args.ce_hidden_dim
         
         # Set GPU memory fraction if specified
         if torch.cuda.is_available() and args.gpu_memory_fraction is not None:
@@ -852,6 +885,9 @@ def main():
                 joint_discrim_hidden_dim=args.joint_discrim_hidden_dim,
                 discrim_layers=args.discrim_layers,
                 joint_discrim_layers=args.joint_discrim_layers,
+                ce_hidden_dim=args.ce_hidden_dim,
+                ce_layers=args.ce_layers,
+                ce_embed_dim=args.ce_embed_dim,
                 use_wandb=args.wandb or args.validate_clusters,  # Auto-enable wandb for cluster validation
                 wandb_project=args.wandb_project,
                 wandb_entity=args.wandb_entity,
@@ -1002,6 +1038,11 @@ def main():
                 use_domain_for_labels=args.use_domain_for_labels,
                 discrim_hidden_dim=args.discrim_hidden_dim,
                 discrim_layers=args.discrim_layers,
+                joint_discrim_hidden_dim=args.joint_discrim_hidden_dim,
+                joint_discrim_layers=args.joint_discrim_layers,
+                ce_hidden_dim=args.ce_hidden_dim,
+                ce_layers=args.ce_layers,
+                ce_embed_dim=args.ce_embed_dim,
                 use_wandb=args.wandb,
                 wandb_project=args.wandb_project,
                 wandb_entity=args.wandb_entity,
@@ -1051,6 +1092,11 @@ def main():
                 ce_epochs=args.ce_epochs,
                 discrim_hidden_dim=args.discrim_hidden_dim,
                 discrim_layers=args.discrim_layers,
+                joint_discrim_layers=args.joint_discrim_layers,
+                joint_discrim_hidden_dim=args.joint_discrim_hidden_dim,
+                ce_hidden_dim=args.ce_hidden_dim,
+                ce_layers=args.ce_layers,
+                ce_embed_dim=args.ce_embed_dim,
                 use_wandb=args.wandb,
                 wandb_project=args.wandb_project,
                 wandb_entity=args.wandb_entity,
@@ -1065,7 +1111,8 @@ def main():
                 lr_start_run=args.lr_start,
                 lr_end_run=args.lr_end,
                 enable_extended_metrics_discrim=not args.disable_extended_metrics,
-                cluster_method_discrim=args.cluster_method  # Pass cluster method
+                cluster_method_discrim=args.cluster_method,  # Pass cluster method
+                model_type=args.model_type
             )
             
             print(f"\n✅ LATEST CHECKPOINT ANALYSIS COMPLETE!")

@@ -136,7 +136,7 @@ def load_discriminator_with_validation(cache_path: Path, discrim_type: str, expe
         print(f"⚠️  Failed to load cached {discrim_type}: {e}, training new one...")
         return None
 
-def train_discrim(model, loader, optimizer, data_type, num_epoch=40, wandb_prefix=None, use_compile=True, cluster_method='gmm', enable_extended_metrics=False):
+def train_discrim(model, loader, optimizer, data_type, num_epoch=40, wandb_prefix=None, use_compile=True, cluster_method='gmm', enable_extended_metrics=True):
     """Train a Discrim on (X → Y). data_type tells which fields of the batch are features/labels."""
     model.train()
     model.to(global_device) # Ensure model is on the correct device
@@ -327,7 +327,7 @@ def train_discrim(model, loader, optimizer, data_type, num_epoch=40, wandb_prefi
 def train_ce_alignment(model: CEAlignmentInformation, loader: DataLoader, optimizer_class: Callable[..., torch.optim.Optimizer], 
                        num_epoch=10, wandb_prefix: Optional[str]=None, step_offset=0, use_compile=True, 
                        test_mode=False, max_test_examples=3000, auto_find_lr=False, 
-                       lr_finder_steps=200, lr_start=1e-4, lr_end=1000.0):
+                       lr_finder_steps=500, lr_start=1e-9, lr_end=1e5):
     
     print(f"🔮 train_ce_alignment: Starting with wandb_prefix='{wandb_prefix}', step_offset={step_offset}")
     print(f"   HAS_WANDB: {HAS_WANDB}")
@@ -408,7 +408,20 @@ def train_ce_alignment(model: CEAlignmentInformation, loader: DataLoader, optimi
         epoch_loss = 0.0
         epoch_pid_vals = []
         
+        # Calculate total batches for progress tracking
+        total_batches = len(loader)
+        print(f"🚀 Starting Epoch {epoch+1}/{num_epoch} with {total_batches} batches ({total_batches * model.num_labels} cluster computations)")
+        
         for batch_idx, batch_data in enumerate(loader):
+            # Print progress every 50 batches
+            if batch_idx % 50 == 0:
+                print(f"   Batch {batch_idx+1}/{total_batches} (Epoch {epoch+1})")
+                
+            start_time = torch.cuda.Event(enable_timing=True) if torch.cuda.is_available() else None
+            end_time = torch.cuda.Event(enable_timing=True) if torch.cuda.is_available() else None
+            
+            if start_time is not None:
+                start_time.record()
             x1_batch, x2_batch, y_batch_orig = batch_data
             x1_batch, x2_batch, y_batch_orig = x1_batch.to(global_device), x2_batch.to(global_device), y_batch_orig.to(global_device)
             
@@ -423,6 +436,16 @@ def train_ce_alignment(model: CEAlignmentInformation, loader: DataLoader, optimi
             # Store batch results
             epoch_loss += loss.item()
             epoch_pid_vals.append(pid_vals.detach().cpu().numpy())
+            
+            # Record timing and print progress for large batches
+            if end_time is not None:
+                end_time.record()
+                torch.cuda.synchronize()
+                batch_time = start_time.elapsed_time(end_time) / 1000.0  # Convert to seconds
+                
+                if batch_idx % 50 == 0:
+                    avg_loss_so_far = epoch_loss / (batch_idx + 1)
+                    print(f"      Batch {batch_idx+1} completed in {batch_time:.2f}s, avg_loss: {avg_loss_so_far:.4f}")
             
             # Log step metrics if wandb is enabled
             if HAS_WANDB and wandb_prefix and wandb.run:
@@ -444,6 +467,14 @@ def train_ce_alignment(model: CEAlignmentInformation, loader: DataLoader, optimi
         print(f"Epoch {epoch:3d}/{num_epoch:3d} - Loss: {avg_loss:.4f}, "
               f"PID [R={avg_pid_vals[0]:.4f}, U1={avg_pid_vals[1]:.4f}, "
               f"U2={avg_pid_vals[2]:.4f}, S={avg_pid_vals[3]:.4f}]")
+        
+        # Early stopping check: if loss stops decreasing
+        if epoch > 0 and hasattr(model, '_last_loss'):
+            loss_improvement = model._last_loss - avg_loss
+            if loss_improvement < 1e-5:  # Very small improvement
+                print(f"🛑 Early stopping at epoch {epoch+1}: Loss improvement ({loss_improvement:.6f}) below threshold")
+                break
+        model._last_loss = avg_loss
         
         # Memory cleanup
         if torch.cuda.is_available():
@@ -582,9 +613,10 @@ def critic_ce_alignment(
     discrim_epochs=40, ce_epochs=10, 
     wandb_enabled=False, model_name=None,
     discrim_hidden_dim=64, discrim_layers=5, joint_discrim_layers=None, joint_discrim_hidden_dim=None,
+    ce_hidden_dim=64, ce_layers=3, ce_embed_dim=None,
     use_compile=True, test_mode=False, max_test_examples=3000, 
-    auto_find_lr=False, lr_finder_steps=200, 
-                                                                                                                             lr_start=1e-4, lr_end=1000.0,
+    auto_find_lr=False, lr_finder_steps=500, 
+                                                                                                                             lr_start=1e-8, lr_end=1e5,
     enable_extended_metrics=True,
     run_critic_ce_direct=False,
     force_retrain_discriminators=False,
@@ -673,6 +705,7 @@ def critic_ce_alignment(
         # Check model type and create discriminators accordingly
         if model_type == "pretrained_encoders":
             print(f"🧠 Using pretrained encoders for discriminators")
+            print("🔧 Setting up pretrained discriminator caching...")
             
             # Validate required parameters for pretrained encoders
             if model is None:
@@ -682,87 +715,307 @@ def critic_ce_alignment(
             if len(domain_names) < 2:
                 raise ValueError("domain_names must contain at least 2 domain names")
             
-            # Create pretrained discriminators (no training needed, just classifier heads)
-            d1, d2, d12 = create_pretrained_discriminators(
-                x1=x1, x2=x2, labels=labels, num_labels=num_labels,
-                model=model, domain_names=domain_names,
-                discrim_hidden_dim=discrim_hidden_dim, 
-                discrim_layers=discrim_layers,  # For pretrained, this will be 2-layer MLP
-                joint_discrim_hidden_dim=joint_discrim_hidden_dim,  # Pass joint parameters
-                joint_discrim_layers=joint_discrim_layers,          # Pass joint parameters
-                activation='relu'
-            )
+            # Create cache directory and compute cache parameters
+            model_dir = Path.cwd() / "discriminator_cache"  # Use current working directory if no specific model path
+            model_name = model_name if model_name else "pretrained_discriminators"
+            discrim_cache_dir = model_dir / "pretrained_discrim_cache" 
+            discrim_cache_dir.mkdir(parents=True, exist_ok=True)
             
-            # Train only the classifier heads
-            print(f"🔄 Training classifier heads for pretrained discriminators...")
+            # Compute a data hash for cache differentiation
+            train_data_sample = []
+            for batch_idx, batch in enumerate(train_dl):
+                train_data_sample.append(torch.cat([batch[0], batch[1], batch[2]], dim=1))
+                if len(train_data_sample) >= 5:  # Use first 5 batches for hash
+                    break
             
-            # Train individual discriminators' classifier heads
-            # Note: classifier is initialized lazily in the first forward pass, so we don't check for it here
-            print(f"\n🧠 TRAINING PRETRAINED DISCRIMINATOR 1 ({domain_names[0]}) - {discrim_epochs} epochs")
-            print(f"   Input: {domain_names[0]} features → Labels (via pretrained encoder)")
+            domain1_name, domain2_name = domain_names[0], domain_names[1]
+            
+            # Cache filename template for pretrained discriminators
+            def get_pretrained_discrim_cache_path(discrim_type: str) -> Path:
+                # Include domain names and pretrained marker to distinguish from regular discriminators
+                domain_suffix = f"_{domain1_name}_{domain2_name}"
+                
+                if discrim_type == "d12":
+                    # Use joint_discrim_layers and joint_discrim_hidden_dim for joint discriminator
+                    cache_filename = f"pretrained_{model_name}_{discrim_type}{domain_suffix}_h{joint_discrim_hidden_dim}_l{joint_discrim_layers}_e{discrim_epochs}_s{train_data_sample[0].size(0) if train_data_sample else 0}_c{num_labels}_gmm_d{x1.size(1)}x{x2.size(1)}_comp{int(use_compile)}.pt"
+                else:
+                    # Use regular discrim_layers and discrim_hidden_dim for individual discriminators
+                    input_dim = x1.size(1) if discrim_type == "d1" else x2.size(1)
+                    domain_name = domain1_name if discrim_type == "d1" else domain2_name
+                    cache_filename = f"pretrained_{model_name}_{discrim_type}_{domain_name}_h{discrim_hidden_dim}_l{discrim_layers}_e{discrim_epochs}_s{train_data_sample[0].size(0) if train_data_sample else 0}_c{num_labels}_gmm_d{input_dim}_comp{int(use_compile)}.pt"
+                return discrim_cache_dir / cache_filename
+            
+            # ========================================
+            # 🔥 PRETRAINED DISCRIMINATOR 1 TRAINING/LOADING
+            # ========================================
+            print(f"\n🧠 TRAINING/LOADING PRETRAINED DISCRIMINATOR 1 ({domain1_name}) - {discrim_epochs} epochs")
+            print(f"   Input: {domain1_name} features → Labels (via pretrained encoder)")
             print(f"   Architecture: Frozen Encoder → {discrim_hidden_dim} → {num_labels}")
             
-            # For pretrained discriminators, we need to initialize the classifier first
-            # by doing a dummy forward pass, then create optimizer with only classifier parameters
-            dummy_batch = next(iter(train_dl))
-            dummy_x1, dummy_x2, dummy_y = dummy_batch[0][:1], dummy_batch[1][:1], dummy_batch[2][:1] #TODO wait didnt we access data above differently?!!
-            dummy_x1, dummy_x2, dummy_y = dummy_x1.to(global_device), dummy_x2.to(global_device), dummy_y.to(global_device)
+            discrim_1_cache_path = get_pretrained_discrim_cache_path("d1")
+            d1 = None
             
-            # Initialize classifiers with dummy forward passes
-            _ = d1(dummy_x1)  # This will trigger classifier initialization
-            _ = d2(dummy_x2)  # This will trigger classifier initialization  
-            _ = d12(dummy_x1, dummy_x2)  # This will trigger classifier initialization
+            # Try to load from cache
+            if discrim_1_cache_path.exists() and not force_retrain_discriminators:
+                try:
+                    print(f"📁 Loading cached pretrained discriminator 1 from {discrim_1_cache_path}")
+                    # For pretrained discriminators, we need to recreate the architecture first
+                    d1_temp, _, _ = create_pretrained_discriminators(
+                        x1=x1, x2=x2, labels=labels, num_labels=num_labels,
+                        model=model, domain_names=domain_names,
+                        discrim_hidden_dim=discrim_hidden_dim, 
+                        discrim_layers=discrim_layers,
+                        joint_discrim_hidden_dim=joint_discrim_hidden_dim,
+                        joint_discrim_layers=joint_discrim_layers,
+                        activation='relu'
+                    )
+                    
+                    # Initialize classifier with dummy forward pass
+                    dummy_batch = next(iter(train_dl))
+                    dummy_x1 = dummy_batch[0][:1].to(global_device)
+                    _ = d1_temp(dummy_x1)
+                    
+                    # Load the cached state
+                    checkpoint = torch.load(discrim_1_cache_path, map_location=global_device)
+                    d1_temp.load_state_dict(checkpoint['model_state_dict'])
+                    d1 = d1_temp
+                    print(f"✅ Successfully loaded pretrained discriminator 1 from cache")
+                except Exception as e:
+                    print(f"❌ Failed to load cached pretrained discriminator 1: {e}")
+                    d1 = None
             
-            # Now create optimizers with only the trainable (classifier) parameters
-            opt1 = torch.optim.Adam(d1.trainable_parameters(), lr=1e-3)
-            wandb_prefix = f"pretrained_discriminator_1/{model_name}" if wandb_enabled and model_name else None
-            d1 = train_discrim(
-                model=d1,
-                loader=train_dl,
-                optimizer=opt1,
-                data_type=([0], [2]),
-                num_epoch=discrim_epochs,
-                wandb_prefix=wandb_prefix,
-                use_compile=use_compile,
-                cluster_method='gmm',
-                enable_extended_metrics=enable_extended_metrics
-            )
+            if d1 is None or force_retrain_discriminators:
+                print(f"🔄 Training new pretrained discriminator 1...")
+                # Create pretrained discriminators (no training needed, just classifier heads)
+                d1, _, _ = create_pretrained_discriminators(
+                    x1=x1, x2=x2, labels=labels, num_labels=num_labels,
+                    model=model, domain_names=domain_names,
+                    discrim_hidden_dim=discrim_hidden_dim, 
+                    discrim_layers=discrim_layers,  # For pretrained, this will be 2-layer MLP
+                    joint_discrim_hidden_dim=joint_discrim_hidden_dim,  # Pass joint parameters
+                    joint_discrim_layers=joint_discrim_layers,          # Pass joint parameters
+                    activation='relu'
+                )
+                
+                # Initialize classifiers with dummy forward passes
+                dummy_batch = next(iter(train_dl))
+                dummy_x1 = dummy_batch[0][:1].to(global_device)
+                _ = d1(dummy_x1)  # This will trigger classifier initialization
+                
+                # Train only the classifier heads
+                opt1 = torch.optim.Adam(d1.trainable_parameters(), lr=1e-3)
+                wandb_prefix = f"pretrained_discriminator_1/{model_name}" if wandb_enabled and model_name else None
+                d1 = train_discrim(
+                    model=d1,
+                    loader=train_dl,
+                    optimizer=opt1,
+                    data_type=([0], [2]),
+                    num_epoch=discrim_epochs,
+                    wandb_prefix=wandb_prefix,
+                    use_compile=use_compile,
+                    cluster_method='gmm',
+                    enable_extended_metrics=enable_extended_metrics
+                )
+                
+                # Save to cache with enhanced metadata
+                save_discriminator_with_metadata(
+                    discriminator=d1,
+                    cache_path=discrim_1_cache_path,
+                    discrim_type="pretrained_d1",
+                    input_dim=x1.size(1),
+                    hidden_dim=discrim_hidden_dim,
+                    layers=discrim_layers,
+                    model_path="pretrained_discriminators",
+                    model_name=model_name,
+                    domain_name=domain1_name,
+                    num_clusters=num_labels,
+                    discrim_epochs=discrim_epochs,
+                    n_samples=train_data_sample[0].size(0) if train_data_sample else 0,
+                    cluster_method_discrim='gmm',
+                    use_compile_torch=use_compile
+                )
             
-            print(f"\n🧠 TRAINING PRETRAINED DISCRIMINATOR 2 ({domain_names[1]}) - {discrim_epochs} epochs")
-            print(f"   Input: {domain_names[1]} features → Labels (via pretrained encoder)")
+            # ========================================
+            # 🔥 PRETRAINED DISCRIMINATOR 2 TRAINING/LOADING
+            # ========================================
+            print(f"\n🧠 TRAINING/LOADING PRETRAINED DISCRIMINATOR 2 ({domain2_name}) - {discrim_epochs} epochs")
+            print(f"   Input: {domain2_name} features → Labels (via pretrained encoder)")
             print(f"   Architecture: Frozen Encoder → {discrim_hidden_dim} → {num_labels}")
             
-            opt2 = torch.optim.Adam(d2.trainable_parameters(), lr=1e-3)
-            wandb_prefix = f"pretrained_discriminator_2/{model_name}" if wandb_enabled and model_name else None
-            d2 = train_discrim(
-                model=d2,
-                loader=train_dl,
-                optimizer=opt2,
-                data_type=([1], [2]),
-                num_epoch=discrim_epochs,
-                wandb_prefix=wandb_prefix,
-                use_compile=use_compile,
-                cluster_method='gmm', #TODO does this mean we train with KL loss in any case? even if k means?
-                enable_extended_metrics=enable_extended_metrics
-            )
+            discrim_2_cache_path = get_pretrained_discrim_cache_path("d2")
+            d2 = None
             
-            print(f"\n🧠 TRAINING PRETRAINED JOINT DISCRIMINATOR ({domain_names[0]}+{domain_names[1]}) - {discrim_epochs} epochs")
+            # Try to load from cache
+            if discrim_2_cache_path.exists() and not force_retrain_discriminators:
+                try:
+                    print(f"📁 Loading cached pretrained discriminator 2 from {discrim_2_cache_path}")
+                    # For pretrained discriminators, we need to recreate the architecture first
+                    _, d2_temp, _ = create_pretrained_discriminators(
+                        x1=x1, x2=x2, labels=labels, num_labels=num_labels,
+                        model=model, domain_names=domain_names,
+                        discrim_hidden_dim=discrim_hidden_dim, 
+                        discrim_layers=discrim_layers,
+                        joint_discrim_hidden_dim=joint_discrim_hidden_dim,
+                        joint_discrim_layers=joint_discrim_layers,
+                        activation='relu'
+                    )
+                    
+                    # Initialize classifier with dummy forward pass
+                    dummy_batch = next(iter(train_dl))
+                    dummy_x2 = dummy_batch[1][:1].to(global_device)
+                    _ = d2_temp(dummy_x2)
+                    
+                    # Load the cached state
+                    checkpoint = torch.load(discrim_2_cache_path, map_location=global_device)
+                    d2_temp.load_state_dict(checkpoint['model_state_dict'])
+                    d2 = d2_temp
+                    print(f"✅ Successfully loaded pretrained discriminator 2 from cache")
+                except Exception as e:
+                    print(f"❌ Failed to load cached pretrained discriminator 2: {e}")
+                    d2 = None
+            
+            if d2 is None or force_retrain_discriminators:
+                print(f"🔄 Training new pretrained discriminator 2...")
+                # Create pretrained discriminators if not cached
+                _, d2, _ = create_pretrained_discriminators(
+                    x1=x1, x2=x2, labels=labels, num_labels=num_labels,
+                    model=model, domain_names=domain_names,
+                    discrim_hidden_dim=discrim_hidden_dim, 
+                    discrim_layers=discrim_layers,
+                    joint_discrim_hidden_dim=joint_discrim_hidden_dim,
+                    joint_discrim_layers=joint_discrim_layers,
+                    activation='relu'
+                )
+                
+                # Initialize classifiers with dummy forward passes
+                dummy_batch = next(iter(train_dl))
+                dummy_x2 = dummy_batch[1][:1].to(global_device)
+                _ = d2(dummy_x2)  # This will trigger classifier initialization
+                
+                opt2 = torch.optim.Adam(d2.trainable_parameters(), lr=1e-3)
+                wandb_prefix = f"pretrained_discriminator_2/{model_name}" if wandb_enabled and model_name else None
+                d2 = train_discrim(
+                    model=d2,
+                    loader=train_dl,
+                    optimizer=opt2,
+                    data_type=([1], [2]),
+                    num_epoch=discrim_epochs,
+                    wandb_prefix=wandb_prefix,
+                    use_compile=use_compile,
+                    cluster_method='gmm',
+                    enable_extended_metrics=enable_extended_metrics
+                )
+                
+                # Save to cache with enhanced metadata
+                save_discriminator_with_metadata(
+                    discriminator=d2,
+                    cache_path=discrim_2_cache_path,
+                    discrim_type="pretrained_d2",
+                    input_dim=x2.size(1),
+                    hidden_dim=discrim_hidden_dim,
+                    layers=discrim_layers,
+                    model_path="pretrained_discriminators",
+                    model_name=model_name,
+                    domain_name=domain2_name,
+                    num_clusters=num_labels,
+                    discrim_epochs=discrim_epochs,
+                    n_samples=train_data_sample[0].size(0) if train_data_sample else 0,
+                    cluster_method_discrim='gmm',
+                    use_compile_torch=use_compile
+                )
+            
+            # ========================================
+            # 🔥 PRETRAINED JOINT DISCRIMINATOR TRAINING/LOADING
+            # ========================================
+            print(f"\n🧠 TRAINING/LOADING PRETRAINED JOINT DISCRIMINATOR ({domain1_name}+{domain2_name}) - {discrim_epochs} epochs")
             print(f"   Input: Combined features → Labels (via pretrained encoders)")
             print(f"   Architecture: Frozen Encoders → {joint_discrim_hidden_dim} → {num_labels}")
             
-            opt12 = torch.optim.Adam(d12.trainable_parameters(), lr=1e-3)
-            wandb_prefix = f"pretrained_discriminator_joint/{model_name}" if wandb_enabled and model_name else None
-            d12 = train_discrim(
-                model=d12,
-                loader=train_dl,
-                optimizer=opt12,
-                data_type=([0,1], [2]),
-                num_epoch=discrim_epochs,
-                wandb_prefix=wandb_prefix,
-                use_compile=use_compile,
-                cluster_method='gmm',
-                enable_extended_metrics=enable_extended_metrics
-            )
+            discrim_12_cache_path = get_pretrained_discrim_cache_path("d12")
+            d12 = None
+            
+            # Try to load from cache
+            if discrim_12_cache_path.exists() and not force_retrain_discriminators:
+                try:
+                    print(f"📁 Loading cached pretrained joint discriminator from {discrim_12_cache_path}")
+                    # For pretrained discriminators, we need to recreate the architecture first
+                    _, _, d12_temp = create_pretrained_discriminators(
+                        x1=x1, x2=x2, labels=labels, num_labels=num_labels,
+                        model=model, domain_names=domain_names,
+                        discrim_hidden_dim=discrim_hidden_dim, 
+                        discrim_layers=discrim_layers,
+                        joint_discrim_hidden_dim=joint_discrim_hidden_dim,
+                        joint_discrim_layers=joint_discrim_layers,
+                        activation='relu'
+                    )
+                    
+                    # Initialize classifier with dummy forward pass
+                    dummy_batch = next(iter(train_dl))
+                    dummy_x1, dummy_x2 = dummy_batch[0][:1].to(global_device), dummy_batch[1][:1].to(global_device)
+                    _ = d12_temp(dummy_x1, dummy_x2)
+                    
+                    # Load the cached state
+                    checkpoint = torch.load(discrim_12_cache_path, map_location=global_device)
+                    d12_temp.load_state_dict(checkpoint['model_state_dict'])
+                    d12 = d12_temp
+                    print(f"✅ Successfully loaded pretrained joint discriminator from cache")
+                except Exception as e:
+                    print(f"❌ Failed to load cached pretrained joint discriminator: {e}")
+                    d12 = None
+            
+            if d12 is None or force_retrain_discriminators:
+                print(f"🔄 Training new pretrained joint discriminator...")
+                # Create pretrained discriminators if not cached
+                _, _, d12 = create_pretrained_discriminators(
+                    x1=x1, x2=x2, labels=labels, num_labels=num_labels,
+                    model=model, domain_names=domain_names,
+                    discrim_hidden_dim=discrim_hidden_dim, 
+                    discrim_layers=discrim_layers,
+                    joint_discrim_hidden_dim=joint_discrim_hidden_dim,
+                    joint_discrim_layers=joint_discrim_layers,
+                    activation='relu'
+                )
+                
+                # Initialize classifiers with dummy forward passes
+                dummy_batch = next(iter(train_dl))
+                dummy_x1, dummy_x2 = dummy_batch[0][:1].to(global_device), dummy_batch[1][:1].to(global_device)
+                _ = d12(dummy_x1, dummy_x2)  # This will trigger classifier initialization
+                
+                opt12 = torch.optim.Adam(d12.trainable_parameters(), lr=1e-3)
+                wandb_prefix = f"pretrained_discriminator_joint/{model_name}" if wandb_enabled and model_name else None
+                d12 = train_discrim(
+                    model=d12,
+                    loader=train_dl,
+                    optimizer=opt12,
+                    data_type=([0,1], [2]),
+                    num_epoch=discrim_epochs,
+                    wandb_prefix=wandb_prefix,
+                    use_compile=use_compile,
+                    cluster_method='gmm',
+                    enable_extended_metrics=enable_extended_metrics
+                )
+                
+                # Save to cache with enhanced metadata including joint parameters
+                save_discriminator_with_metadata(
+                    discriminator=d12,
+                    cache_path=discrim_12_cache_path,
+                    discrim_type="pretrained_d12",
+                    input_dim=x1.size(1) + x2.size(1),
+                    hidden_dim=joint_discrim_hidden_dim,
+                    layers=joint_discrim_layers,
+                    model_path="pretrained_discriminators",
+                    model_name=model_name,
+                    domain_name=f"{domain1_name}+{domain2_name}",
+                    num_clusters=num_labels,
+                    discrim_epochs=discrim_epochs,
+                    n_samples=train_data_sample[0].size(0) if train_data_sample else 0,
+                    cluster_method_discrim='gmm',
+                    use_compile_torch=use_compile,
+                    joint_discrim_hidden_dim=joint_discrim_hidden_dim,
+                    joint_discrim_layers=joint_discrim_layers,
+                    x1_dim=x1.size(1),
+                    x2_dim=x2.size(1)
+                )
         
         elif model_type == "complete_MLP":
             print("🧠 Using complete MLP discriminators (original approach)")
@@ -991,14 +1244,18 @@ def critic_ce_alignment(
         p_y = p_y.to(global_device)  # Ensure on correct device
         del one_hot, labels_flat
     
-    # Create CE alignment model
+    # Set default for CE embed_dim if not specified
+    if ce_embed_dim is None:
+        ce_embed_dim = ce_hidden_dim
+    
+    # Create CE alignment model with separate CE parameters
     ce_model = CEAlignmentInformation(
         x1_dim=x1.size(1), 
         x2_dim=x2.size(1), 
-        hidden_dim=discrim_hidden_dim, 
-        embed_dim=discrim_hidden_dim,  # Use same as hidden_dim for embed_dim
+        hidden_dim=ce_hidden_dim, 
+        embed_dim=ce_embed_dim,
         num_labels=num_labels, 
-        layers=discrim_layers, 
+        layers=ce_layers, 
         activation='relu',
         discrim_1=d1,
         discrim_2=d2,

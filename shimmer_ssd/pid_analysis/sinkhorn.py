@@ -25,7 +25,7 @@ def sinkhorn_probs(
     x1_probs: torch.Tensor,
     x2_probs: torch.Tensor,
     tol: float = 1e-2, #TODO this is as in the NeurIPS paper and helps with vanishin gradients 
-    max_iter: int = 500,
+    max_iter: int = 5,  # Reduced from 10 to 5 for faster training
     chunk_size: Optional[int] = None, # Parameter chunk_size takes precedence if provided
     log_to_wandb: bool = False,  # New parameter for wandb logging
     wandb_prefix: str = "sinkhorn",  # Prefix for wandb logs
