@@ -10,8 +10,7 @@ This script creates a new version of the SimpleShapes dataset with:
 
 The script loads existing SimpleShapes data and generates new versions without
 modifying the original data in place.
-
-Author: AI Assistant
+|~~~~~~~~~~~  
 """
 
 import os
@@ -230,17 +229,19 @@ class DatasetModifier:
     Main class for modifying SimpleShapes datasets with new color scheme.
     """
     
-    def __init__(self, rgb_resolution: int = 256, imsize: int = 32):
+    def __init__(self, rgb_resolution: int = 256, imsize: int = 32, dpi: int = 100):
         """
         Initialize the dataset modifier.
         
         Args:
             rgb_resolution: RGB space resolution
             imsize: Image size in pixels
+            dpi: DPI for image generation (higher = better quality)
         """
         self.partitioner = RGBSpacePartitioner(rgb_resolution)
         self.image_generator = ModifiedImageGenerator(imsize)
         self.imsize = imsize
+        self.dpi = dpi
     
     def load_original_dataset(self, labels_path: str) -> Tuple[np.ndarray, dict]:
         """
@@ -259,11 +260,16 @@ class DatasetModifier:
         logger.info(f"Loaded dataset with {len(labels)} samples from {labels_path}")
         logger.info(f"Label array shape: {labels.shape}")
         
-        # Parse label structure (based on save_labels function)
-        # [category, x, y, size, rotation, r, g, b, h, l, s, unpaired]
+        # Parse label structure (actual format has 22 columns)
+        # We only need the first 8: [category, x, y, size, rotation, r, g, b]
+        # Columns 8-21 contain HLS values and other metadata we don't need
+        if labels.shape[1] < 8:
+            raise ValueError(f"Dataset has {labels.shape[1]} columns, need at least 8")
+        
         metadata = {
             'n_samples': len(labels),
             'original_shape': labels.shape,
+            'core_columns_used': 8,  # Only using first 8 columns
             'column_mapping': {
                 0: 'category',
                 1: 'x_location', 
@@ -273,10 +279,7 @@ class DatasetModifier:
                 5: 'color_r',
                 6: 'color_g', 
                 7: 'color_b',
-                8: 'hls_h',
-                9: 'hls_l',
-                10: 'hls_s',
-                11: 'unpaired'
+                # Columns 8-21 are ignored (HLS, alignment data, etc.)
             }
         }
         
@@ -295,12 +298,13 @@ class DatasetModifier:
         n_samples = len(original_labels)
         logger.info(f"Creating modified dataset for {n_samples} samples")
         
-        # Extract original attributes
+        # Extract original attributes (only first 8 columns)
         classes = original_labels[:, 0].astype(int)
         locations = original_labels[:, 1:3]  # x, y
         sizes = original_labels[:, 3].astype(int)
         rotations = original_labels[:, 4]
-        unpaired = original_labels[:, 11]
+        # Original RGB colors from columns 5-7 (we'll replace these)
+        original_colors = original_labels[:, 5:8]
         
         # Generate new shape colors from non-grayscale region
         logger.info("Generating new shape colors from non-grayscale RGB region...")
@@ -324,7 +328,7 @@ class DatasetModifier:
             colors=new_shape_colors,
             background_colors=background_colors,
             background_scalars=background_scalars,
-            unpaired=unpaired
+            unpaired=np.zeros(n_samples)  # Not used in modified dataset
         )
     
     def save_modified_images(self, dataset: ModifiedDataset, output_dir: str) -> None:
@@ -338,11 +342,9 @@ class DatasetModifier:
         os.makedirs(output_dir, exist_ok=True)
         logger.info(f"Saving {len(dataset.classes)} modified images to {output_dir}")
         
-        dpi = 1
-        
         for i in tqdm(range(len(dataset.classes)), desc="Generating images"):
             # Create matplotlib figure
-            fig, ax = plt.subplots(figsize=(self.imsize / dpi, self.imsize / dpi), dpi=dpi)
+            fig, ax = plt.subplots(figsize=(self.imsize / self.dpi, self.imsize / self.dpi), dpi=self.dpi)
             ax = cast(Axes, ax)
             
             # Generate image with new colors
@@ -359,7 +361,7 @@ class DatasetModifier:
             # Save image
             output_path = Path(output_dir) / f"{i}.png"
             plt.tight_layout(pad=0)
-            plt.savefig(output_path, dpi=dpi, format="png")
+            plt.savefig(output_path, dpi=self.dpi, format="png")
             plt.close(fig)
     
     def save_modified_labels(self, dataset: ModifiedDataset, output_path: str) -> None:
@@ -424,10 +426,14 @@ class DatasetModifier:
             f.write(f"Modified SimpleShapes Dataset - {split_name} split\n")
             f.write(f"Original samples: {metadata['n_samples']}\n")
             f.write(f"Original shape: {metadata['original_shape']}\n")
+            f.write(f"Core columns used: {metadata['core_columns_used']}\n")
             f.write(f"Modified samples: {len(modified_dataset.classes)}\n")
-            f.write(f"Modified attributes: 9 (original 8 + background_scalar)\n")
+            f.write(f"Modified attributes: 9 (core 8 + background_scalar)\n")
             f.write(f"Image size: {self.imsize}x{self.imsize}\n")
-            f.write("\nModified label format:\n")
+            f.write(f"Image DPI: {self.dpi}\n")
+            f.write("\nOriginal format had 22 columns, we used only first 8 core attributes:\n")
+            f.write("0: category, 1: x, 2: y, 3: size, 4: rotation, 5-7: original_rgb\n")
+            f.write("\nModified label format (9 columns):\n")
             f.write("0: category\n1: x_location\n2: y_location\n3: size\n4: rotation\n")
             f.write("5: shape_color_r\n6: shape_color_g\n7: shape_color_b\n8: background_scalar\n")
             f.write(f"\nColor scheme:\n")
@@ -450,6 +456,8 @@ def main():
                        help="Dataset splits to process")
     parser.add_argument("--imsize", type=int, default=32,
                        help="Image size in pixels")
+    parser.add_argument("--dpi", type=int, default=100,
+                       help="DPI for image generation (higher = better quality)")
     parser.add_argument("--rgb-resolution", type=int, default=256,
                        help="RGB space resolution")
     parser.add_argument("--seed", type=int, default=42,
@@ -462,7 +470,7 @@ def main():
     logger.info(f"Set random seed to {args.seed}")
     
     # Initialize modifier
-    modifier = DatasetModifier(rgb_resolution=args.rgb_resolution, imsize=args.imsize)
+    modifier = DatasetModifier(rgb_resolution=args.rgb_resolution, imsize=args.imsize, dpi=args.dpi)
     
     # Process each split
     for split in args.splits:
@@ -488,6 +496,7 @@ def main():
     print(f"Output directory: {args.output_dir}")
     print(f"Processed splits: {args.splits}")
     print(f"Image size: {args.imsize}x{args.imsize}")
+    print(f"Image DPI: {args.dpi}")
     print(f"RGB resolution: {args.rgb_resolution}")
     print("\nKey changes:")
     print("• Shape colors: Sampled from non-grayscale RGB region")

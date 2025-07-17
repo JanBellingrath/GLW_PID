@@ -14,8 +14,8 @@ from pathlib import Path
 def run_modification_example():
     """Run an example of the dataset modification process."""
     
-    # Example paths (adjust these to your actual paths)
-    input_dir = "/home/janerik/shimmer-ssd/simple-shapes-dataset/sample_dataset"
+    # Example paths (using actual discovered paths)
+    input_dir = "/home/janerik/shimmer-ssd/full_shapes_dataset/simple_shapes_dataset"
     output_dir = "./modified_simpleshapes_dataset"
     
     print("="*60)
@@ -50,6 +50,7 @@ def run_modification_example():
         "--input-dir", input_dir,
         "--output-dir", output_dir,
         "--imsize", "32",
+        "--dpi", "100",
         "--rgb-resolution", "256", 
         "--seed", "42"
     ]

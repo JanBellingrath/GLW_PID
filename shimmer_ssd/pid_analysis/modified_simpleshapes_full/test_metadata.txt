@@ -1,0 +1,26 @@
+Modified SimpleShapes Dataset - test split
+Original samples: 50000
+Original shape: (50000, 22)
+Core columns used: 8
+Modified samples: 50000
+Modified attributes: 9 (core 8 + background_scalar)
+Image size: 32x32
+Image DPI: 100
+
+Original format had 22 columns, we used only first 8 core attributes:
+0: category, 1: x, 2: y, 3: size, 4: rotation, 5-7: original_rgb
+
+Modified label format (9 columns):
+0: category
+1: x_location
+2: y_location
+3: size
+4: rotation
+5: shape_color_r
+6: shape_color_g
+7: shape_color_b
+8: background_scalar
+
+Color scheme:
+- Shapes: Non-grayscale RGB region (R≠G or G≠B or R≠B)
+- Backgrounds: Grayscale region (R=G=B), scalar ∈ [0,1]

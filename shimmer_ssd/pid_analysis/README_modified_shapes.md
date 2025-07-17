@@ -26,6 +26,13 @@ The modified dataset introduces:
 
 ## Usage
 
+### Image Quality Note
+
+The default DPI setting is 100, which produces high-quality images. You can adjust this with the `--dpi` parameter:
+- `--dpi 50`: Lower quality, smaller files
+- `--dpi 100`: Default, good quality 
+- `--dpi 150` or higher: Maximum quality, larger files
+
 ### Basic Usage
 
 ```bash
@@ -34,6 +41,7 @@ python3 generate_modified_shapes.py \
     --output-dir /path/to/modified/dataset \
     --splits train val test \
     --imsize 32 \
+    --dpi 100 \
     --seed 42
 ```
 
@@ -45,6 +53,7 @@ python3 generate_modified_shapes.py \
 | `--output-dir` | Required | Directory to save modified dataset |
 | `--splits` | `["train", "val", "test"]` | Dataset splits to process |
 | `--imsize` | `32` | Image size in pixels |
+| `--dpi` | `100` | DPI for image generation (higher = better quality) |
 | `--rgb-resolution` | `256` | RGB space resolution (8-bit = 256) |
 | `--seed` | `42` | Random seed for reproducibility |
 
