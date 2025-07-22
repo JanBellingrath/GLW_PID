@@ -29,10 +29,12 @@ import torch
 import torch.nn.functional as F
 from lightning.pytorch import Callback, LightningDataModule, LightningModule, Trainer, seed_everything
 from lightning.pytorch.callbacks import ModelCheckpoint
-from lightning.pytorch.loggers import TensorBoardLogger
+from lightning.pytorch.loggers import WandbLogger
+import wandb
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
+import torchvision
 
 from shimmer import DomainModule, LossOutput
 from shimmer.modules.vae import (
@@ -280,6 +282,114 @@ class ModifiedShapesDataModule(LightningDataModule):
             num_workers=self.num_workers,
             persistent_workers=True if self.num_workers > 0 else False
         )
+
+#############################################################################
+# COMPREHENSIVE VAE LOGGING CALLBACKS
+#############################################################################
+
+class VAEReconstructionCallback(Callback):
+    """Log reconstruction samples and metrics for VAE training."""
+    
+    def __init__(self, num_samples=8, log_every_n_epochs=5):
+        super().__init__()
+        self.num_samples = num_samples
+        self.log_every_n_epochs = log_every_n_epochs
+        self.val_samples = None
+        
+    def on_validation_epoch_end(self, trainer, pl_module):
+        if trainer.current_epoch % self.log_every_n_epochs == 0:
+            self._log_reconstructions(trainer, pl_module)
+            self._log_latent_statistics(trainer, pl_module)
+    
+    def _log_reconstructions(self, trainer, pl_module):
+        """Log original vs reconstructed samples."""
+        if self.val_samples is None:
+            # Get validation samples once
+            val_loader = trainer.datamodule.val_dataloader()
+            batch = next(iter(val_loader))
+            if isinstance(pl_module, VisualDomainModule):
+                self.val_samples = batch[frozenset(["v"])]["v"][:self.num_samples]
+            else:  # AttributeDomainModule
+                self.val_samples = batch[frozenset(["attr"])]["attr"]
+                
+        pl_module.eval()
+        with torch.no_grad():
+            samples = self.val_samples[:self.num_samples].to(pl_module.device)
+            
+            if isinstance(pl_module, VisualDomainModule):
+                # Visual reconstructions
+                (mean, logvar), reconstruction = pl_module.vae(samples)
+                
+                # Create grid of original vs reconstructed images
+                comparison = torch.cat([samples, reconstruction], dim=0)
+                grid = torchvision.utils.make_grid(comparison, nrow=self.num_samples, normalize=True)
+                
+                wandb.log({
+                    "visual_reconstructions": wandb.Image(grid, caption="Top: Original, Bottom: Reconstructed"),
+                    "epoch": trainer.current_epoch
+                })
+                
+                # Log sample generations from prior
+                z_sample = torch.randn(self.num_samples, pl_module.latent_dim).to(pl_module.device)
+                generated = pl_module.decode(z_sample)
+                gen_grid = torchvision.utils.make_grid(generated, nrow=self.num_samples, normalize=True)
+                
+                wandb.log({
+                    "visual_generations": wandb.Image(gen_grid, caption="Generated from random latents"),
+                    "epoch": trainer.current_epoch
+                })
+                
+            else:
+                # Attribute reconstructions
+                (mean, logvar), reconstruction = pl_module.vae(samples)
+                
+                # Log attribute reconstruction accuracy
+                categories_target = samples[0].argmax(dim=1)
+                categories_pred = reconstruction[0].argmax(dim=1)
+                attr_accuracy = (categories_pred == categories_target).float().mean()
+                
+                continuous_mse = F.mse_loss(reconstruction[1], samples[1])
+                
+                wandb.log({
+                    "attr_category_accuracy": attr_accuracy,
+                    "attr_continuous_mse": continuous_mse,
+                    "epoch": trainer.current_epoch
+                })
+    
+    def _log_latent_statistics(self, trainer, pl_module):
+        """Log latent space statistics."""
+        if hasattr(pl_module, '_last_mean') and hasattr(pl_module, '_last_logvar'):
+            mean_norm = pl_module._last_mean.norm(dim=1).mean()
+            logvar_mean = pl_module._last_logvar.mean()
+            
+            wandb.log({
+                f"{pl_module.__class__.__name__.lower()}_latent_mean_norm": mean_norm,
+                f"{pl_module.__class__.__name__.lower()}_latent_logvar_mean": logvar_mean,
+                "epoch": trainer.current_epoch
+            })
+
+class VAEMetricsCallback(Callback):
+    """Track comprehensive VAE training metrics."""
+    
+    def __init__(self):
+        super().__init__()
+        
+    def on_train_epoch_start(self, trainer, pl_module):
+        # Log learning rate
+        if trainer.optimizers:
+            current_lr = trainer.optimizers[0].param_groups[0]['lr']
+            wandb.log({
+                "learning_rate": current_lr,
+                "epoch": trainer.current_epoch
+            })
+    
+    def on_validation_epoch_end(self, trainer, pl_module):
+        # Log additional metrics
+        wandb.log({
+            "epoch": trainer.current_epoch,
+            "global_step": trainer.global_step,
+            "beta": pl_module.vae.beta if hasattr(pl_module.vae, 'beta') else 1.0,
+        })
 
 #############################################################################
 # VISUAL DOMAIN MODULE (updated for RGB only)
@@ -603,7 +713,7 @@ def train_visual_vae():
     )
     
     # Setup logging and callbacks
-    logger = TensorBoardLogger(OUTPUT_DIR / "logs", name="visual_vae")
+    logger = WandbLogger(project="modified_shapes_vae", name="visual_vae")
     
     # Get samples for logging
     # val_samples = data_module.get_samples("val", 32)[frozenset(["v"])]["v"]
@@ -628,6 +738,8 @@ def train_visual_vae():
             save_last=True,
             save_top_k=1,
         ),
+        VAEReconstructionCallback(num_samples=8, log_every_n_epochs=5),
+        VAEMetricsCallback(),
     ]
     
     # Create trainer and train
@@ -673,7 +785,7 @@ def train_attribute_vae():
     )
     
     # Setup logging and callbacks
-    logger = TensorBoardLogger(OUTPUT_DIR / "logs", name="attribute_vae")
+    logger = WandbLogger(project="modified_shapes_vae", name="attribute_vae")
     
     attribute_checkpoint_dir = CHECKPOINT_DIR / "attribute"
     attribute_checkpoint_dir.mkdir(exist_ok=True)
@@ -687,6 +799,8 @@ def train_attribute_vae():
             save_last=True,
             save_top_k=1,
         ),
+        VAEReconstructionCallback(num_samples=8, log_every_n_epochs=5),
+        VAEMetricsCallback(),
     ]
     
     # Create trainer and train
