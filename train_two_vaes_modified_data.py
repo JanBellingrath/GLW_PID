@@ -324,20 +324,22 @@ class VAEReconstructionCallback(Callback):
                 comparison = torch.cat([samples, reconstruction], dim=0)
                 grid = torchvision.utils.make_grid(comparison, nrow=self.num_samples, normalize=True)
                 
-                wandb.log({
-                    "visual_reconstructions": wandb.Image(grid, caption="Top: Original, Bottom: Reconstructed"),
-                    "epoch": trainer.current_epoch
-                })
+                trainer.logger.log_image(
+                    key="visual_reconstructions", 
+                    images=[grid], 
+                    caption=["Top: Original, Bottom: Reconstructed"]
+                )
                 
                 # Log sample generations from prior
                 z_sample = torch.randn(self.num_samples, pl_module.latent_dim).to(pl_module.device)
                 generated = pl_module.decode(z_sample)
                 gen_grid = torchvision.utils.make_grid(generated, nrow=self.num_samples, normalize=True)
                 
-                wandb.log({
-                    "visual_generations": wandb.Image(gen_grid, caption="Generated from random latents"),
-                    "epoch": trainer.current_epoch
-                })
+                trainer.logger.log_image(
+                    key="visual_generations", 
+                    images=[gen_grid], 
+                    caption=["Generated from random latents"]
+                )
                 
             else:
                 # Attribute reconstructions
@@ -350,11 +352,11 @@ class VAEReconstructionCallback(Callback):
                 
                 continuous_mse = F.mse_loss(reconstruction[1], samples[1])
                 
-                wandb.log({
+                # Log through Lightning's logger
+                trainer.logger.log_metrics({
                     "attr_category_accuracy": attr_accuracy,
                     "attr_continuous_mse": continuous_mse,
-                    "epoch": trainer.current_epoch
-                })
+                }, step=trainer.global_step)
     
     def _log_latent_statistics(self, trainer, pl_module):
         """Log latent space statistics."""
@@ -362,11 +364,10 @@ class VAEReconstructionCallback(Callback):
             mean_norm = pl_module._last_mean.norm(dim=1).mean()
             logvar_mean = pl_module._last_logvar.mean()
             
-            wandb.log({
+            trainer.logger.log_metrics({
                 f"{pl_module.__class__.__name__.lower()}_latent_mean_norm": mean_norm,
                 f"{pl_module.__class__.__name__.lower()}_latent_logvar_mean": logvar_mean,
-                "epoch": trainer.current_epoch
-            })
+            }, step=trainer.global_step)
 
 class VAEMetricsCallback(Callback):
     """Track comprehensive VAE training metrics."""
@@ -378,18 +379,17 @@ class VAEMetricsCallback(Callback):
         # Log learning rate
         if trainer.optimizers:
             current_lr = trainer.optimizers[0].param_groups[0]['lr']
-            wandb.log({
+            trainer.logger.log_metrics({
                 "learning_rate": current_lr,
-                "epoch": trainer.current_epoch
-            })
+            }, step=trainer.global_step)
     
     def on_validation_epoch_end(self, trainer, pl_module):
         # Log additional metrics
-        wandb.log({
+        trainer.logger.log_metrics({
             "epoch": trainer.current_epoch,
             "global_step": trainer.global_step,
             "beta": pl_module.vae.beta if hasattr(pl_module.vae, 'beta') else 1.0,
-        })
+        }, step=trainer.global_step)
 
 #############################################################################
 # VISUAL DOMAIN MODULE (updated for RGB only)
@@ -409,6 +409,9 @@ class VisualDomainModule(DomainModule):
         """Visual domain module with VAE for image encoding."""
         super().__init__(latent_dim)
         self.save_hyperparameters()
+        
+        # Store latent_dim for callback access
+        self.latent_dim = latent_dim
 
         vae_encoder = RAEEncoder(num_channels, ae_dim, latent_dim, use_batchnorm=True)
         vae_decoder = RAEDecoder(num_channels, latent_dim, ae_dim)
@@ -450,13 +453,36 @@ class VisualDomainModule(DomainModule):
         """Computes the loss given image data"""
         (mean, logvar), reconstruction = self.vae(x)
         
+        # Store latent statistics for logging
+        self._last_mean = mean.detach()
+        self._last_logvar = logvar.detach()
+        
         reconstruction_loss = gaussian_nll(reconstruction, torch.zeros_like(reconstruction), x).sum()
         kl_loss = kl_divergence_loss(mean, logvar)
         total_loss = reconstruction_loss + self.vae.beta * kl_loss
 
-        self.log(f"{mode}/reconstruction_loss", reconstruction_loss)
-        self.log(f"{mode}/kl_loss", kl_loss)
-        self.log(f"{mode}/loss", total_loss)
+        # Enhanced logging
+        batch_size = x.size(0)
+        self.log(f"{mode}/reconstruction_loss", reconstruction_loss, batch_size=batch_size)
+        self.log(f"{mode}/kl_loss", kl_loss, batch_size=batch_size)
+        self.log(f"{mode}/total_loss", total_loss, batch_size=batch_size)
+        self.log(f"{mode}/beta", self.vae.beta, batch_size=batch_size)
+        
+        # Additional VAE metrics
+        if mode == "val":
+            kl_per_dim = kl_loss / self.latent_dim
+            reconstruction_per_pixel = reconstruction_loss / (x.numel())
+            
+            self.log(f"{mode}/kl_per_dimension", kl_per_dim, batch_size=batch_size)
+            self.log(f"{mode}/reconstruction_per_pixel", reconstruction_per_pixel, batch_size=batch_size)
+            self.log(f"{mode}/elbo", -total_loss, batch_size=batch_size)  # Evidence Lower BOund
+            
+            # Latent statistics
+            latent_mean_norm = mean.norm(dim=1).mean()
+            latent_std_mean = torch.exp(0.5 * logvar).mean()
+            
+            self.log(f"{mode}/latent_mean_norm", latent_mean_norm, batch_size=batch_size)
+            self.log(f"{mode}/latent_std_mean", latent_std_mean, batch_size=batch_size)
 
         return total_loss
 
@@ -543,6 +569,9 @@ class AttributeDomainModule(DomainModule):
         """Attribute domain module with VAE."""
         super().__init__(latent_dim)
         self.save_hyperparameters()
+        
+        # Store latent_dim for callback access
+        self.latent_dim = latent_dim
 
         self.hidden_dim = hidden_dim
         self.coef_categories = coef_categories
@@ -588,6 +617,10 @@ class AttributeDomainModule(DomainModule):
         (mean, logvar), reconstruction = self.vae(x)
         reconstruction_categories = reconstruction[0]
         reconstruction_attributes = reconstruction[1]
+        
+        # Store latent statistics for logging
+        self._last_mean = mean.detach()
+        self._last_logvar = logvar.detach()
 
         # Compute losses
         reconstruction_loss_categories = F.cross_entropy(
@@ -606,11 +639,40 @@ class AttributeDomainModule(DomainModule):
         kl_loss = kl_divergence_loss(mean, logvar)
         total_loss = reconstruction_loss + self.vae.beta * kl_loss
 
-        self.log(f"{mode}/reconstruction_loss_categories", reconstruction_loss_categories)
-        self.log(f"{mode}/reconstruction_loss_attributes", reconstruction_loss_attributes)
-        self.log(f"{mode}/reconstruction_loss", reconstruction_loss)
-        self.log(f"{mode}/kl_loss", kl_loss)
-        self.log(f"{mode}/loss", total_loss)
+        # Enhanced logging
+        batch_size = x_categories.size(0)
+        self.log(f"{mode}/reconstruction_loss_categories", reconstruction_loss_categories, batch_size=batch_size)
+        self.log(f"{mode}/reconstruction_loss_attributes", reconstruction_loss_attributes, batch_size=batch_size)
+        self.log(f"{mode}/reconstruction_loss", reconstruction_loss, batch_size=batch_size)
+        self.log(f"{mode}/kl_loss", kl_loss, batch_size=batch_size)
+        self.log(f"{mode}/total_loss", total_loss, batch_size=batch_size)
+        self.log(f"{mode}/beta", self.vae.beta, batch_size=batch_size)
+        
+        # Additional VAE metrics
+        if mode == "val":
+            # Category accuracy
+            cat_pred = reconstruction_categories.argmax(dim=1)
+            cat_target = x_categories.argmax(dim=1)
+            category_accuracy = (cat_pred == cat_target).float().mean()
+            
+            # Continuous attribute MSE
+            attr_mse = F.mse_loss(reconstruction_attributes, x_attributes)
+            
+            # VAE specific metrics
+            kl_per_dim = kl_loss / self.latent_dim
+            
+            self.log(f"{mode}/category_accuracy", category_accuracy, batch_size=batch_size)
+            self.log(f"{mode}/attribute_mse", attr_mse, batch_size=batch_size)
+            self.log(f"{mode}/kl_per_dimension", kl_per_dim, batch_size=batch_size)
+            self.log(f"{mode}/elbo", -total_loss, batch_size=batch_size)
+            
+            # Latent statistics
+            latent_mean_norm = mean.norm(dim=1).mean()
+            latent_std_mean = torch.exp(0.5 * logvar).mean()
+            
+            self.log(f"{mode}/latent_mean_norm", latent_mean_norm, batch_size=batch_size)
+            self.log(f"{mode}/latent_std_mean", latent_std_mean, batch_size=batch_size)
+            
         return total_loss
 
     def configure_optimizers(self) -> dict[str, Any]:
@@ -713,7 +775,27 @@ def train_visual_vae():
     )
     
     # Setup logging and callbacks
-    logger = WandbLogger(project="modified_shapes_vae", name="visual_vae")
+    logger = WandbLogger(
+        project="modified_shapes_vae", 
+        name="visual_vae",
+        config={
+            **CONFIG,
+            "model_type": "VisualVAE",
+            "domain": "visual", 
+            "architecture": "RAE",
+            "input_channels": 3,
+            "image_size": "32x32",
+            "encoder": "RAEEncoder",
+            "decoder": "RAEDecoder",
+            "likelihood": "Gaussian",
+            "dataset": "modified_simpleshapes",
+            "data_path": str(MODIFIED_DATA_PATH),
+            "model_parameters": sum(p.numel() for p in v_domain_module.parameters()),
+            "trainable_parameters": sum(p.numel() for p in v_domain_module.parameters() if p.requires_grad),
+        },
+        tags=["vae", "visual", "modified_shapes", "training"],
+        notes="Training visual VAE on modified SimpleShapes dataset with colored shapes and grayscale backgrounds"
+    )
     
     # Get samples for logging
     # val_samples = data_module.get_samples("val", 32)[frozenset(["v"])]["v"]
@@ -733,7 +815,7 @@ def train_visual_vae():
         ModelCheckpoint(
             dirpath=visual_checkpoint_dir,
             filename="visual_vae_best",
-            monitor="val/loss",
+            monitor="val/total_loss",
             mode="min",
             save_last=True,
             save_top_k=1,
@@ -749,6 +831,8 @@ def train_visual_vae():
         callbacks=callbacks,
         accelerator="auto",
         devices="auto",
+        log_every_n_steps=50,
+        val_check_interval=0.25,  # Validate 4 times per epoch
     )
     
     trainer.fit(v_domain_module, data_module)
@@ -785,7 +869,29 @@ def train_attribute_vae():
     )
     
     # Setup logging and callbacks
-    logger = WandbLogger(project="modified_shapes_vae", name="attribute_vae")
+    logger = WandbLogger(
+        project="modified_shapes_vae", 
+        name="attribute_vae",
+        config={
+            **CONFIG,
+            "model_type": "AttributeVAE",
+            "domain": "attributes",
+            "architecture": "MLP",
+            "input_features": 11,  # 3 categories + 8 continuous
+            "output_categories": 3,
+            "output_continuous": 8,
+            "encoder": "Custom MLP",
+            "decoder": "Custom MLP + Sigmoid",
+            "categorical_likelihood": "Categorical (CrossEntropy)",
+            "continuous_likelihood": "Gaussian",
+            "dataset": "modified_simpleshapes",
+            "data_path": str(MODIFIED_DATA_PATH),
+            "model_parameters": sum(p.numel() for p in attr_domain_module.parameters()),
+            "trainable_parameters": sum(p.numel() for p in attr_domain_module.parameters() if p.requires_grad),
+        },
+        tags=["vae", "attributes", "modified_shapes", "training"],
+        notes="Training attribute VAE on modified SimpleShapes dataset with normalized attributes"
+    )
     
     attribute_checkpoint_dir = CHECKPOINT_DIR / "attribute"
     attribute_checkpoint_dir.mkdir(exist_ok=True)
@@ -794,7 +900,7 @@ def train_attribute_vae():
         ModelCheckpoint(
             dirpath=attribute_checkpoint_dir,
             filename="attribute_vae_best",
-            monitor="val/loss",
+            monitor="val/total_loss",
             mode="min",
             save_last=True,
             save_top_k=1,
@@ -810,6 +916,8 @@ def train_attribute_vae():
         callbacks=callbacks,
         accelerator="auto",
         devices="auto",
+        log_every_n_steps=50,
+        val_check_interval=0.25,  # Validate 4 times per epoch
     )
     
     trainer.fit(attr_domain_module, data_module)
@@ -826,33 +934,53 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"🔧 Using device: {device}")
     
-    # Step 1: Train Visual VAE
-    print("\n" + "="*60)
-    visual_model, visual_data, visual_checkpoint = train_visual_vae()
+    # Initialize timing for CUDA devices
+    start_time = None
+    end_time = None
+    if torch.cuda.is_available() and device.type == "cuda":
+        start_time = torch.cuda.Event(enable_timing=True)
+        end_time = torch.cuda.Event(enable_timing=True)
+        start_time.record()
     
-    # Step 2: Train Attribute VAE  
-    print("\n" + "="*60)
-    attr_model, attr_data, attr_checkpoint = train_attribute_vae()
-    
-    # Step 3: Extract and save latents
-    print("\n" + "="*60)
-    print("💾 Extracting and saving latents...")
-    
-    # Load best models for latent extraction
-    visual_model = VisualDomainModule.load_from_checkpoint(visual_checkpoint)
-    attr_model = AttributeDomainModule.load_from_checkpoint(attr_checkpoint)
-    
-    visual_model.to(device)
-    attr_model.to(device)
-    
-    # Extract latents
-    save_latents_for_domain(visual_model, visual_data, "v", "visual", device)
-    save_latents_for_domain(attr_model, attr_data, "attr", "attribute", device)
-    
-    print("\n🎉 Training workflow completed!")
-    print(f"📁 All outputs saved to: {OUTPUT_DIR}")
-    print(f"🏗️  Model checkpoints: {CHECKPOINT_DIR}")
-    print(f"🔢 Latent vectors: {LATENTS_DIR}")
+    try:
+        # Step 1: Train Visual VAE
+        print("\n" + "="*60)
+        visual_model, visual_data, visual_checkpoint = train_visual_vae()
+        
+        # Step 2: Train Attribute VAE  
+        print("\n" + "="*60)
+        attr_model, attr_data, attr_checkpoint = train_attribute_vae()
+        
+        # Step 3: Extract and save latents
+        print("\n" + "="*60)
+        print("💾 Extracting and saving latents...")
+        
+        # Load best models for latent extraction
+        visual_model = VisualDomainModule.load_from_checkpoint(visual_checkpoint)
+        attr_model = AttributeDomainModule.load_from_checkpoint(attr_checkpoint)
+        
+        visual_model.to(device)
+        attr_model.to(device)
+        
+        # Extract latents
+        visual_train_latents, visual_val_latents = save_latents_for_domain(visual_model, visual_data, "v", "visual", device)
+        attr_train_latents, attr_val_latents = save_latents_for_domain(attr_model, attr_data, "attr", "attribute", device)
+        
+        # Calculate timing if CUDA was used
+        if start_time and end_time:
+            end_time.record()
+            torch.cuda.synchronize()
+            total_time = start_time.elapsed_time(end_time) / 1000.0  # Convert to seconds
+            print(f"⏱️ Total training time: {total_time:.2f} seconds")
+        
+        print("\n🎉 Training workflow completed!")
+        print(f"📁 All outputs saved to: {OUTPUT_DIR}")
+        print(f"🏗️  Model checkpoints: {CHECKPOINT_DIR}")
+        print(f"🔢 Latent vectors: {LATENTS_DIR}")
+        
+    except Exception as e:
+        print(f"❌ Error during training: {e}")
+        raise
 
 if __name__ == "__main__":
     main() 
