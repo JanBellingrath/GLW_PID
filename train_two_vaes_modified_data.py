@@ -314,7 +314,13 @@ class VAEReconstructionCallback(Callback):
                 
         pl_module.eval()
         with torch.no_grad():
-            samples = self.val_samples[:self.num_samples].to(pl_module.device)
+            # Handle both single tensor (visual) and list of tensors (attributes)
+            if isinstance(self.val_samples, (list, tuple)):
+                # Attribute domain: list of [categories, continuous] tensors
+                samples = [t[:self.num_samples].to(pl_module.device) for t in self.val_samples]
+            else:
+                # Visual domain: single tensor
+                samples = self.val_samples[:self.num_samples].to(pl_module.device)
             
             if isinstance(pl_module, VisualDomainModule):
                 # Visual reconstructions
