@@ -19,16 +19,22 @@ Modified from original simple-shapes-dataset-training.ipynb
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, cast
+import os
+import numpy as np
+from PIL import Image
 
 import matplotlib
 import matplotlib.pyplot as plt
 import torch
 import torch.nn.functional as F
-from lightning.pytorch import Callback, Trainer, seed_everything
+from lightning.pytorch import Callback, LightningDataModule, LightningModule, Trainer, seed_everything
 from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning.pytorch.loggers import TensorBoardLogger
+from torch import nn
+from torch.utils.data import DataLoader, Dataset
+from torchvision import transforms
+
 from shimmer import DomainModule, LossOutput
-from shimmer.modules.domain import DomainModule
 from shimmer.modules.vae import (
     VAE,
     VAEDecoder,
@@ -45,28 +51,30 @@ from shimmer_ssd.logging import (
     batch_to_device,
 )
 from shimmer_ssd.modules.vae import RAEDecoder, RAEEncoder
-from torch import nn
 from torch.nn.functional import mse_loss
 from torch.optim.lr_scheduler import OneCycleLR
-import numpy as np
 
-# Custom data loading for modified data
-from adapt_training_for_modified_data import ModifiedDataModule
+# Set non-interactive backend for matplotlib
+matplotlib.use('Agg')
+
+# Enable debug mode if needed
+torch.autograd.set_detect_anomaly(DEBUG_MODE)
 
 #############################################################################
-# CONFIGURATION AND SETUP
+# CONFIGURATION & PATHS
 #############################################################################
 
-# PLACEHOLDER: Update these paths to your modified data
-MODIFIED_DATA_PATH = "/path/to/your/modified/dataset"  # UPDATE THIS
-OUTPUT_DIR = Path("./modified_data_outputs")
+# TODO: Update this path to your actual modified dataset location
+MODIFIED_DATA_PATH = "shimmer_ssd/pid_analysis/modified_simpleshapes_full/"
+
+# Output directories
+OUTPUT_DIR = PROJECT_DIR / "vae_training_outputs"
 CHECKPOINT_DIR = OUTPUT_DIR / "checkpoints"
-LATENTS_DIR = OUTPUT_DIR / "latents"
+LATENTS_DIR = OUTPUT_DIR / "saved_latents"
 
 # Create output directories
-OUTPUT_DIR.mkdir(exist_ok=True)
-CHECKPOINT_DIR.mkdir(exist_ok=True)
-LATENTS_DIR.mkdir(exist_ok=True)
+for dir_path in [OUTPUT_DIR, CHECKPOINT_DIR, LATENTS_DIR]:
+    dir_path.mkdir(parents=True, exist_ok=True)
 
 # Training configuration
 CONFIG = {
@@ -89,7 +97,192 @@ CONFIG = {
 }
 
 #############################################################################
-# VISUAL DOMAIN MODULE (keep function definitions)
+# DATA PREPROCESSING FUNCTIONS
+#############################################################################
+
+def preprocess_attributes(raw_attributes: np.ndarray) -> torch.Tensor:
+    """
+    Convert 9-feature modified format to VAE-compatible normalized format.
+    
+    Input format (9 features): [category, x, y, size, rotation, r, g, b, background_scalar]
+    Output format (11 features): [cat_0, cat_1, cat_2, x_norm, y_norm, size_norm, rotation_norm, r_norm, g_norm, b_norm, background_scalar]
+    
+    NOTE: All continuous attributes are normalized to the [0, 1] range to match the decoder's Sigmoid output range [0, 1].
+    
+    Args:
+        raw_attributes: Array of shape [N, 9] with modified attribute format
+        
+    Returns:
+        Tensor of shape [N, 11] with one-hot categories + 8 normalized attributes
+    """
+    N = raw_attributes.shape[0]
+    
+    # Extract components
+    categories = raw_attributes[:, 0].astype(int)  # Single values {0, 1, 2}
+    other_attributes = raw_attributes[:, 1:].copy()  # [x, y, size, rotation, r, g, b, background_scalar]
+    
+    # CRITICAL NORMALIZATION: Scale all attributes to [0, 1] range
+    # This prevents the color values [0, 255] from dominating the loss
+    
+    # Normalize spatial attributes (CORRECTED ranges based on actual data)
+    other_attributes[:, 0] = (other_attributes[:, 0] - 7.0) / 17.0   # x: [7, 24] → [0, 1]
+    other_attributes[:, 1] = (other_attributes[:, 1] - 7.0) / 17.0   # y: [7, 24] → [0, 1]  
+    other_attributes[:, 2] = (other_attributes[:, 2] - 7.0) / 7.0    # size: [7, 14] → [0, 1]
+    other_attributes[:, 3] /= (2 * np.pi)  # rotation: [0, 2π] → [0, 1]
+    
+    # Normalize color attributes (CRITICAL!)
+    other_attributes[:, 4] /= 255.0     # r: [0, 255] → [0, 1]
+    other_attributes[:, 5] /= 255.0     # g: [0, 255] → [0, 1]
+    other_attributes[:, 6] /= 255.0     # b: [0, 255] → [0, 1]
+    
+    # background_scalar is already in [0, 1] range - no change needed
+    # other_attributes[:, 7] = other_attributes[:, 7]  # background_scalar: [0, 1] → [0, 1]
+    
+    # One-hot encode categories
+    category_onehot = np.zeros((N, 3))
+    category_onehot[np.arange(N), categories] = 1.0
+    
+    # Concatenate: [cat_0, cat_1, cat_2] + [x_norm, y_norm, size_norm, rotation_norm, r_norm, g_norm, b_norm, background_scalar]
+    processed = np.concatenate([category_onehot, other_attributes], axis=1)
+    
+    return torch.tensor(processed, dtype=torch.float32)
+
+def convert_rgba_to_rgb(image_path: str) -> torch.Tensor:
+    """
+    Load image and convert from RGBA to RGB format.
+    
+    Args:
+        image_path: Path to the image file
+        
+    Returns:
+        Tensor of shape [3, H, W] with RGB channels only
+    """
+    # Load image
+    image = Image.open(image_path)
+    
+    # Convert RGBA to RGB (removes alpha channel)
+    if image.mode == 'RGBA':
+        # Create white background and paste RGBA image on it
+        rgb_image = Image.new('RGB', image.size, (255, 255, 255))
+        rgb_image.paste(image, mask=image.split()[-1])  # Use alpha as mask
+        image = rgb_image
+    elif image.mode != 'RGB':
+        image = image.convert('RGB')
+    
+    # Convert to tensor and normalize to [0, 1]
+    transform = transforms.Compose([
+        transforms.ToTensor(),  # Converts to [0, 1] and changes to [C, H, W]
+    ])
+    
+    return transform(image)
+
+#############################################################################
+# CUSTOM DATASET CLASSES
+#############################################################################
+
+class ModifiedShapesDataset(Dataset):
+    """
+    Dataset for loading modified SimpleShapes data with preprocessing.
+    """
+    
+    def __init__(self, data_dir: str, split: str = "train", domain: str = "both"):
+        """
+        Initialize dataset.
+        
+        Args:
+            data_dir: Path to modified dataset directory
+            split: Dataset split ('train', 'val', 'test')
+            domain: Which domain to return ('visual', 'attributes', 'both')
+        """
+        self.data_dir = Path(data_dir)
+        self.split = split
+        self.domain = domain
+        
+        # Load attributes
+        labels_path = self.data_dir / f"{split}_labels_independent.npy"
+        if not labels_path.exists():
+            raise FileNotFoundError(f"Labels file not found: {labels_path}")
+        
+        self.raw_attributes = np.load(labels_path)
+        print(f"Loaded {len(self.raw_attributes)} samples from {labels_path}")
+        
+        # Preprocess attributes (convert to one-hot + 9 attributes = 11 total)
+        self.processed_attributes = preprocess_attributes(self.raw_attributes)
+        
+        # Image directory
+        self.image_dir = self.data_dir / split
+        if not self.image_dir.exists():
+            raise FileNotFoundError(f"Image directory not found: {self.image_dir}")
+        
+        print(f"Dataset initialized: {len(self)} samples")
+        print(f"Attribute shape: {self.processed_attributes.shape}")
+    
+    def __len__(self):
+        return len(self.raw_attributes)
+    
+    def __getitem__(self, idx):
+        # Load and preprocess image (RGBA -> RGB)
+        image_path = self.image_dir / f"{idx}.png"
+        image = convert_rgba_to_rgb(str(image_path))
+        
+        # Get preprocessed attributes - split into categories and continuous
+        attributes = self.processed_attributes[idx]
+        categories = attributes[:3]  # One-hot encoded categories
+        continuous_attrs = attributes[3:]  # 8 continuous attributes
+        
+        # Return format expected by shimmer domain modules
+        if self.domain == "visual":
+            return {frozenset(["v"]): {"v": image}}
+        elif self.domain == "attributes":
+            return {frozenset(["attr"]): {"attr": [categories, continuous_attrs]}}
+        else:  # both
+            return {
+                'image': image,
+                'attributes': [categories, continuous_attrs],
+                'idx': idx
+            }
+
+class ModifiedShapesDataModule(LightningDataModule):
+    """
+    Data module for modified SimpleShapes dataset.
+    """
+    
+    def __init__(self, data_dir: str, batch_size: int = 32, num_workers: int = 4, domain: str = "both"):
+        super().__init__()
+        self.data_dir = data_dir
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+        self.domain = domain
+        
+    def setup(self, stage: str = None):
+        # Create datasets
+        self.train_dataset = ModifiedShapesDataset(self.data_dir, "train", self.domain)
+        self.val_dataset = ModifiedShapesDataset(self.data_dir, "val", self.domain)
+        
+        print(f"Setup complete:")
+        print(f"  Train samples: {len(self.train_dataset)}")
+        print(f"  Val samples: {len(self.val_dataset)}")
+    
+    def train_dataloader(self):
+        return DataLoader(
+            self.train_dataset,
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=self.num_workers,
+            persistent_workers=True if self.num_workers > 0 else False
+        )
+    
+    def val_dataloader(self):
+        return DataLoader(
+            self.val_dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            num_workers=self.num_workers,
+            persistent_workers=True if self.num_workers > 0 else False
+        )
+
+#############################################################################
+# VISUAL DOMAIN MODULE (updated for RGB only)
 #############################################################################
 
 class VisualDomainModule(DomainModule):
@@ -139,15 +332,15 @@ class VisualDomainModule(DomainModule):
         x = batch[frozenset(["v"])]["v"]
         return self.generic_step(x, "train")
 
-    def validation_step(self, batch: Mapping[str, torch.Tensor], batch_idx: int) -> torch.Tensor:
-        x = batch["v"]
+    def validation_step(self, batch: Mapping[frozenset[str], Mapping[str, torch.Tensor]], batch_idx: int) -> torch.Tensor:
+        x = batch[frozenset(["v"])]["v"]
         return self.generic_step(x, "val")
 
     def generic_step(self, x: torch.Tensor, mode: str = "train") -> torch.Tensor:
         """Computes the loss given image data"""
         (mean, logvar), reconstruction = self.vae(x)
         
-        reconstruction_loss = gaussian_nll(reconstruction, torch.tensor(0), x).sum()
+        reconstruction_loss = gaussian_nll(reconstruction, torch.zeros_like(reconstruction), x).sum()
         kl_loss = kl_divergence_loss(mean, logvar)
         total_loss = reconstruction_loss + self.vae.beta * kl_loss
 
@@ -184,7 +377,7 @@ class Encoder(VAEEncoder):
         self.out_dim = out_dim
 
         self.encoder = nn.Sequential(
-            nn.Linear(11, hidden_dim),  # 3 categories + 8 attributes
+            nn.Linear(11, hidden_dim),  # 3 one-hot categories + 8 attributes (including background_scalar)
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
@@ -214,9 +407,11 @@ class Decoder(VAEDecoder):
         )
 
         self.decoder_categories = nn.Sequential(nn.Linear(self.hidden_dim, 3))
+        
+        # Output 8 attributes: [x, y, size, rotation, r, g, b, background_scalar]
         self.decoder_attributes = nn.Sequential(
             nn.Linear(self.hidden_dim, 8),
-            nn.Tanh(),
+            nn.Sigmoid(),  # FIXED: Output [0, 1] range to match normalized input attributes
         )
 
     def forward(self, x: torch.Tensor) -> list[torch.Tensor]:
@@ -273,8 +468,8 @@ class AttributeDomainModule(DomainModule):
         x = batch[frozenset(["attr"])]["attr"]
         return self.generic_step(x, "train")
 
-    def validation_step(self, batch: Mapping[str, Sequence[torch.Tensor]], batch_idx: int) -> torch.Tensor:
-        x = batch["attr"]
+    def validation_step(self, batch: Mapping[frozenset[str], Mapping[str, Sequence[torch.Tensor]]], batch_idx: int) -> torch.Tensor:
+        x = batch[frozenset(["attr"])]["attr"]
         return self.generic_step(x, "val")
 
     def generic_step(self, x: Sequence[torch.Tensor], mode: str = "train") -> torch.Tensor:
@@ -284,10 +479,15 @@ class AttributeDomainModule(DomainModule):
         reconstruction_categories = reconstruction[0]
         reconstruction_attributes = reconstruction[1]
 
+        # Compute losses
         reconstruction_loss_categories = F.cross_entropy(
             reconstruction_categories, x_categories.argmax(dim=1), reduction="sum"
         )
-        reconstruction_loss_attributes = gaussian_nll(reconstruction_attributes, torch.tensor(0), x_attributes).sum()
+        reconstruction_loss_attributes = gaussian_nll(
+            reconstruction_attributes,
+            torch.zeros_like(reconstruction_attributes),
+            x_attributes,
+        ).sum()
 
         reconstruction_loss = (
             self.coef_categories * reconstruction_loss_categories
@@ -339,7 +539,11 @@ def extract_latents_from_dataloader(model, dataloader, domain_key, device):
             else:
                 continue
                 
-            data = data.to(device)
+            # Move data to device
+            if isinstance(data, (list, tuple)):
+                data = [d.to(device) for d in data]
+            else:
+                data = data.to(device)
             latents = model.encode(data)
             all_latents.append(latents.cpu().numpy())
     
@@ -377,10 +581,11 @@ def train_visual_vae():
     seed_everything(CONFIG['seed'], workers=True)
     
     # Create data module for visual domain only
-    data_module = ModifiedDataModule(
-        data_path=MODIFIED_DATA_PATH,
+    data_module = ModifiedShapesDataModule(
+        data_dir=MODIFIED_DATA_PATH,
         batch_size=CONFIG['batch_size'],
         num_workers=CONFIG['num_workers'],
+        domain="visual",
     )
     
     # Create visual domain module
@@ -434,8 +639,8 @@ def train_visual_vae():
         devices="auto",
     )
     
-    # trainer.fit(v_domain_module, data_module)
-    # trainer.validate(v_domain_module, data_module, "best")
+    trainer.fit(v_domain_module, data_module)
+    trainer.validate(v_domain_module, data_module, "best")
     
     return v_domain_module, data_module, visual_checkpoint_dir / "visual_vae_best.ckpt"
 
@@ -447,10 +652,11 @@ def train_attribute_vae():
     seed_everything(CONFIG['seed'], workers=True)
     
     # Create data module for attribute domain only
-    data_module = ModifiedDataModule(
-        data_path=MODIFIED_DATA_PATH,
+    data_module = ModifiedShapesDataModule(
+        data_dir=MODIFIED_DATA_PATH,
         batch_size=CONFIG['batch_size'], 
         num_workers=CONFIG['num_workers'],
+        domain="attributes",
     )
     
     # Create attribute domain module
@@ -492,8 +698,8 @@ def train_attribute_vae():
         devices="auto",
     )
     
-    # trainer.fit(attr_domain_module, data_module)
-    # trainer.validate(attr_domain_module, data_module, "best")
+    trainer.fit(attr_domain_module, data_module)
+    trainer.validate(attr_domain_module, data_module, "best")
     
     return attr_domain_module, data_module, attribute_checkpoint_dir / "attribute_vae_best.ckpt"
 
@@ -508,26 +714,26 @@ def main():
     
     # Step 1: Train Visual VAE
     print("\n" + "="*60)
-    # visual_model, visual_data, visual_checkpoint = train_visual_vae()
+    visual_model, visual_data, visual_checkpoint = train_visual_vae()
     
     # Step 2: Train Attribute VAE  
     print("\n" + "="*60)
-    # attr_model, attr_data, attr_checkpoint = train_attribute_vae()
+    attr_model, attr_data, attr_checkpoint = train_attribute_vae()
     
     # Step 3: Extract and save latents
     print("\n" + "="*60)
     print("💾 Extracting and saving latents...")
     
-    # # Load best models for latent extraction
-    # visual_model = VisualDomainModule.load_from_checkpoint(visual_checkpoint)
-    # attr_model = AttributeDomainModule.load_from_checkpoint(attr_checkpoint)
+    # Load best models for latent extraction
+    visual_model = VisualDomainModule.load_from_checkpoint(visual_checkpoint)
+    attr_model = AttributeDomainModule.load_from_checkpoint(attr_checkpoint)
     
-    # visual_model.to(device)
-    # attr_model.to(device)
+    visual_model.to(device)
+    attr_model.to(device)
     
-    # # Extract latents
-    # save_latents_for_domain(visual_model, visual_data, "v", "visual", device)
-    # save_latents_for_domain(attr_model, attr_data, "attr", "attribute", device)
+    # Extract latents
+    save_latents_for_domain(visual_model, visual_data, "v", "visual", device)
+    save_latents_for_domain(attr_model, attr_data, "attr", "attribute", device)
     
     print("\n🎉 Training workflow completed!")
     print(f"📁 All outputs saved to: {OUTPUT_DIR}")
@@ -535,9 +741,4 @@ def main():
     print(f"🔢 Latent vectors: {LATENTS_DIR}")
 
 if __name__ == "__main__":
-    # Uncomment the line below to run the full training workflow
-    # main()
-    
-    # For now, just show the configuration
-    print("Configuration loaded. Update MODIFIED_DATA_PATH and uncomment main() to start training.")
-    print(f"Current config: {CONFIG}") 
+    main() 
