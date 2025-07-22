@@ -60,13 +60,12 @@ from torch.optim.lr_scheduler import OneCycleLR
 matplotlib.use('Agg')
 
 # Enable debug mode if needed
-torch.autograd.set_detect_anomaly(DEBUG_MODE)
+torch.autograd.set_detect_anomaly(True)#TODO this works like that?
 
 #############################################################################
 # CONFIGURATION & PATHS
 #############################################################################
 
-# TODO: Update this path to your actual modified dataset location
 MODIFIED_DATA_PATH = "shimmer_ssd/pid_analysis/modified_simpleshapes_full/"
 
 # Output directories
@@ -83,13 +82,14 @@ CONFIG = {
     'seed': 42,
     'batch_size': 32,
     'num_workers': 4,
-    'max_steps': 10000,  # Adjust as needed
+    'max_steps': 300000,  # ~13 epochs - train long, early stop on val loss
     'learning_rate': 1e-3,
     'weight_decay': 0.0,
     'visual': {
         'latent_dim': 12,
         'ae_dim': 64,
-        'beta': 1.0
+        'beta': 1.0,
+        'background_weight': None  # Will be auto-calculated if None
     },
     'attribute': {
         'latent_dim': 12,
@@ -97,6 +97,83 @@ CONFIG = {
         'beta': 1.0
     }
 }
+
+#############################################################################
+# BACKGROUND WEIGHTING FUNCTIONS
+#############################################################################
+
+def compute_foreground_mask(image: torch.Tensor, color_threshold: float = 0.05, deviation_threshold: float = 0.05) -> torch.Tensor:
+    """
+    Compute a binary foreground mask for an image.
+    
+    Args:
+        image: RGB image tensor of shape [3, H, W] with values in [0, 1]
+        color_threshold: Threshold for color deviation to detect colored pixels
+        deviation_threshold: Threshold for brightness deviation from modal grey
+        
+    Returns:
+        Binary mask of shape [1, H, W] where 1 = foreground, 0 = background
+    """
+    # Method 1: Detect colored pixels (RGB std > threshold)
+    color_mask = image.std(dim=0, keepdim=True) > color_threshold  # [1, H, W]
+    
+    # Method 2: Detect deviation from average grey level
+    bg_level = image.mean()  # Average grey level across entire image
+    brightness_deviation = torch.abs(image.mean(dim=0, keepdim=True) - bg_level) > deviation_threshold
+    
+    # Combine both methods
+    foreground_mask = (color_mask | brightness_deviation).float()
+    
+    return foreground_mask
+
+def calculate_global_background_weight(data_module, num_samples: int = 1000) -> float:
+    """
+    Pre-calculate the global background weight by sampling from training data.
+    
+    Args:
+        data_module: ModifiedShapesDataModule with training data
+        num_samples: Number of samples to use for calculation
+        
+    Returns:
+        Background weight (w_bg) to balance foreground vs background loss
+    """
+    print(f"🔍 Calculating global background weight from {num_samples} training samples...")
+    
+    # Setup data module
+    data_module.setup()
+    train_loader = data_module.train_dataloader()
+    
+    total_pixels = 0
+    total_foreground_pixels = 0
+    samples_processed = 0
+    
+    with torch.no_grad():
+        for batch in train_loader:
+            if samples_processed >= num_samples:
+                break
+                
+            images = batch[frozenset(["v"])]["v"]  # [batch_size, 3, H, W]
+            batch_size = images.size(0)
+            
+            for i in range(batch_size):
+                if samples_processed >= num_samples:
+                    break
+                    
+                image = images[i]  # [3, H, W]
+                fg_mask = compute_foreground_mask(image)  # [1, H, W]
+                
+                total_pixels += fg_mask.numel()
+                total_foreground_pixels += fg_mask.sum().item()
+                samples_processed += 1
+    
+    foreground_ratio = total_foreground_pixels / total_pixels
+    background_weight = foreground_ratio / (1 - foreground_ratio)  # N_fg / N_bg
+    
+    print(f"✅ Global statistics:")
+    print(f"  Foreground ratio: {foreground_ratio:.4f}")
+    print(f"  Background weight: {background_weight:.4f}")
+    
+    return background_weight
 
 #############################################################################
 # DATA PREPROCESSING FUNCTIONS
@@ -408,6 +485,7 @@ class VisualDomainModule(DomainModule):
         latent_dim: int,
         ae_dim: int,
         beta: float = 1,
+        background_weight: float = 1.0,
         optim_lr: float = 1e-3,
         optim_weight_decay: float = 0,
         scheduler_args: Mapping[str, Any] | None = None,
@@ -418,6 +496,7 @@ class VisualDomainModule(DomainModule):
         
         # Store latent_dim for callback access
         self.latent_dim = latent_dim
+        self.background_weight = background_weight
 
         vae_encoder = RAEEncoder(num_channels, ae_dim, latent_dim, use_batchnorm=True)
         vae_decoder = RAEDecoder(num_channels, latent_dim, ae_dim)
@@ -463,7 +542,28 @@ class VisualDomainModule(DomainModule):
         self._last_mean = mean.detach()
         self._last_logvar = logvar.detach()
         
-        reconstruction_loss = gaussian_nll(reconstruction, torch.zeros_like(reconstruction), x).sum()
+        # Compute weighted reconstruction loss to balance foreground vs background
+        if self.background_weight != 1.0:
+            # Compute foreground/background weights for each image in batch
+            batch_size = x.size(0)
+            weight_maps = []
+            
+            for i in range(batch_size):
+                fg_mask = compute_foreground_mask(x[i])  # [1, H, W]
+                bg_mask = 1.0 - fg_mask  # [1, H, W]
+                weight_map = fg_mask + self.background_weight * bg_mask  # [1, H, W]
+                weight_maps.append(weight_map)
+            
+            weight_maps = torch.stack(weight_maps, dim=0)  # [batch_size, 1, H, W]
+            weight_maps = weight_maps.expand_as(x)  # [batch_size, 3, H, W]
+            
+            # Compute weighted reconstruction loss
+            err_squared = (reconstruction - x).pow(2)  # [batch_size, 3, H, W]
+            reconstruction_loss = (weight_maps * err_squared).sum() * 0.5
+        else:
+            # Use original unweighted loss
+            reconstruction_loss = gaussian_nll(reconstruction, torch.zeros_like(reconstruction), x).sum()
+        
         kl_loss = kl_divergence_loss(mean, logvar)
         total_loss = reconstruction_loss + self.vae.beta * kl_loss
 
@@ -473,6 +573,7 @@ class VisualDomainModule(DomainModule):
         self.log(f"{mode}/kl_loss", kl_loss, batch_size=batch_size)
         self.log(f"{mode}/total_loss", total_loss, batch_size=batch_size)
         self.log(f"{mode}/beta", self.vae.beta, batch_size=batch_size)
+        self.log(f"{mode}/background_weight", self.background_weight, batch_size=batch_size)
         
         # Additional VAE metrics
         if mode == "val":
@@ -766,12 +867,20 @@ def train_visual_vae():
         domain="visual",
     )
     
+    # Calculate background weight if not explicitly set
+    if CONFIG['visual']['background_weight'] is None:
+        background_weight = calculate_global_background_weight(data_module, num_samples=1000)
+        CONFIG['visual']['background_weight'] = background_weight
+    else:
+        background_weight = CONFIG['visual']['background_weight']
+    
     # Create visual domain module
     v_domain_module = VisualDomainModule(
         num_channels=3,
         ae_dim=CONFIG['visual']['ae_dim'],
         latent_dim=CONFIG['visual']['latent_dim'],
         beta=CONFIG['visual']['beta'],
+        background_weight=background_weight,
         optim_lr=CONFIG['learning_rate'],
         optim_weight_decay=CONFIG['weight_decay'],
         scheduler_args={
@@ -796,11 +905,12 @@ def train_visual_vae():
             "likelihood": "Gaussian",
             "dataset": "modified_simpleshapes",
             "data_path": str(MODIFIED_DATA_PATH),
+            "background_weight": background_weight,
             "model_parameters": sum(p.numel() for p in v_domain_module.parameters()),
             "trainable_parameters": sum(p.numel() for p in v_domain_module.parameters() if p.requires_grad),
         },
-        tags=["vae", "visual", "modified_shapes", "training"],
-        notes="Training visual VAE on modified SimpleShapes dataset with colored shapes and grayscale backgrounds"
+        tags=["vae", "visual", "modified_shapes", "training", "background_weighted"],
+        notes=f"Training visual VAE with background weighting (w_bg={background_weight:.4f}) on modified SimpleShapes dataset"
     )
     
     # Get samples for logging
