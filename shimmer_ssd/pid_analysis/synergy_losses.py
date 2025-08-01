@@ -206,7 +206,20 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                 encoded = {}
                 for domain_name, domain_input in processed_inputs.items():
                     if domain_name in model.gw_encoders:
-                        encoded[domain_name] = model.gw_encoders[domain_name](domain_input)
+                        # For attribute domain: skip domain module, use preprocessed data directly
+                        if domain_name == 'attr':
+                            # domain_input is already 11D preprocessed attributes
+                            encoded[domain_name] = model.gw_encoders[domain_name](domain_input)
+                        elif domain_name == 'v':
+                            # domain_input is already VAE latents (12D), bypass domain module
+                            encoded[domain_name] = model.gw_encoders[domain_name](domain_input)
+                        else:
+                            # For other domains: use domain module first, then GW encoder
+                            if domain_name in model.domain_mods:
+                                domain_latent = model.domain_mods[domain_name](domain_input)
+                                encoded[domain_name] = model.gw_encoders[domain_name](domain_latent)
+                            else:
+                                encoded[domain_name] = model.gw_encoders[domain_name](domain_input)
                 
                 if encoded:
                     # Fuse and decode
@@ -214,7 +227,23 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                     decoded = {}
                     for domain_name in synergy_targets.keys():
                         if domain_name in model.gw_decoders:
-                            decoded[domain_name] = model.gw_decoders[domain_name](gw_state)
+                            # Decode from workspace to domain latent space
+                            decoded_latent = model.gw_decoders[domain_name](gw_state)
+                            
+                            # For domains without domain modules: decoded output is already in target space
+                            if domain_name == 'attr':
+                                # decoded_latent is already in 11D attribute space
+                                decoded[domain_name] = decoded_latent
+                            elif domain_name == 'v':
+                                # decoded_latent is already in VAE latent space (12D)
+                                decoded[domain_name] = decoded_latent
+                            else:
+                                # For other domains: use domain module decoder if available
+                                if (domain_name in model.domain_mods and 
+                                    hasattr(model.domain_mods[domain_name], 'decode')):
+                                    decoded[domain_name] = model.domain_mods[domain_name].decode(decoded_latent)
+                                else:
+                                    decoded[domain_name] = decoded_latent
                     
                     # Calculate losses against TARGETS (with synergy features)
                     fusion_loss = None
@@ -246,9 +275,9 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                         loss_details['fusion_loss'] = fusion_loss.item()
                         total_loss = weighted_fusion_loss
             
-            # 2. Other losses (demi-cycle, cycle) - use standard approach with targets
-            # Restore the batch format for other losses
-            standard_batch = synergy_targets
+            # 2. Other losses (demi-cycle, cycle) - skip for now with synergy training
+            # These losses assume standard domain module behavior which we've bypassed for attr
+            # TODO: Implement synergy-compatible versions if needed
             
             if loss_weights.get('demi_cycle', 0.0) > 0:
                 from losses_and_weights_GLW_training import calculate_demi_cycle_loss

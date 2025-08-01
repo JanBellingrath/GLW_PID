@@ -182,18 +182,35 @@ class SynergyTrainer:
             # Get base latent dimension
             latent_dim = domain_module.latent_dim
             
+            # Special handling for domains that bypass domain modules
+            if domain_name == 'attr':
+                input_dim = 11  # Our preprocessed attributes are 11D
+                logger.info(f"Attribute domain: bypassing domain module, using 11D preprocessed input directly")
+            elif domain_name == 'v':
+                input_dim = 12  # VAE latents are 12D
+                logger.info(f"Visual domain: bypassing domain module, using 12D VAE latents directly")
+            else:
+                input_dim = latent_dim  # Other domains use domain module output
+            
             # Calculate output dimension based on synergy config
-            output_dim = latent_dim
+            if domain_name == 'attr':
+                # For attributes: base is 11D preprocessed attributes
+                base_dim = 11
+            else:
+                # For other domains: use domain module latent_dim
+                base_dim = latent_dim
+                
+            output_dim = base_dim
             if (domain_name in self.config.synergy_config.get('feature_indices', {}) and 
                 self.config.synergy_config['feature_indices'][domain_name]):
                 # Add synergy feature dimensions
                 synergy_features = len(self.config.synergy_config['feature_indices'][domain_name])
                 output_dim += synergy_features
-                logger.info(f"Expanding {domain_name} decoder output: {latent_dim} -> {output_dim} (+{synergy_features} synergy)")
+                logger.info(f"Expanding {domain_name} decoder output: {base_dim} -> {output_dim} (+{synergy_features} synergy)")
             
-            # Create encoder (input dimension stays the same)
+            # Create encoder with appropriate input dimension
             gw_encoders[domain_name] = GWEncoder(
-                in_dim=latent_dim,
+                in_dim=input_dim,  # 11D for attr, latent_dim for others
                 hidden_dim=self.config.hidden_dim,
                 out_dim=self.config.workspace_dim,
                 n_layers=self.config.n_layers,

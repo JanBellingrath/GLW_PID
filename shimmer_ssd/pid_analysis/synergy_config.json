@@ -3,7 +3,7 @@
     "dir": "../../../simple_shapes_xor_targets",
     "image_dir": "/home/janerik/shimmer-ssd/simple_shapes_dataset",
     "batch_size": 32,
-    "num_workers": 4
+    "num_workers": 0
   },
   "model": {
     "domains": [
@@ -29,7 +29,7 @@
   "synergy": {
     "domains": ["v", "attr"],
     "feature_indices": {
-      "attr": [0]
+      "attr": [11]
     }
   },
   "training": {

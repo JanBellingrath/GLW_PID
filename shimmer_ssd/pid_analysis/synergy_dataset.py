@@ -207,8 +207,9 @@ class SynergyDataset(Dataset):
                 if domain in feature_indices:
                     input_attrs, target_attrs = self._prepare_attribute_tensors(feature_indices[domain])
                 else:
-                    # No synergistic features for this domain
-                    input_attrs = torch.tensor(self.original_attrs, dtype=torch.float32, device=self.device)
+                    # No synergistic features for this domain - still preprocess to 11D
+                    processed_attrs = self._preprocess_attributes(self.original_attrs)
+                    input_attrs = torch.tensor(processed_attrs, dtype=torch.float32, device=self.device)
                     target_attrs = input_attrs  # Same for both input and target
                 self.inputs[domain] = input_attrs
                 self.targets[domain] = target_attrs
@@ -227,6 +228,48 @@ class SynergyDataset(Dataset):
             logger.info(f"  {domain}: input {self.inputs[domain].shape}, "
                        f"target {self.targets[domain].shape}")
     
+    def _preprocess_attributes(self, raw_attrs: np.ndarray) -> np.ndarray:
+        """
+        Preprocess 8D raw attributes to 11D processed attributes.
+        
+        Transformations:
+        - Category (1D): 0,1,2 → one-hot encoding (3D)
+        - Rotation (1D): radians → [cos(θ), sin(θ)] (2D) 
+        - Keep others as-is: x, y, r, g, b, uniform_random (6D)
+        
+        Args:
+            raw_attrs: Array of shape [N, 8] with columns:
+                [category, x, y, rotation, r, g, b, uniform_random]
+                
+        Returns:
+            Processed array of shape [N, 11] with columns:
+                [cat_0, cat_1, cat_2, x, y, cos_rot, sin_rot, r, g, b, uniform_random]
+        """
+        N = raw_attrs.shape[0]
+        processed = np.zeros((N, 11), dtype=np.float32)
+        
+        # One-hot encode category (columns 0-2)
+        categories = raw_attrs[:, 0].astype(int)
+        for i in range(3):
+            processed[:, i] = (categories == i).astype(np.float32)
+        
+        # Keep x, y as-is (columns 3-4)
+        processed[:, 3] = raw_attrs[:, 1]  # x
+        processed[:, 4] = raw_attrs[:, 2]  # y
+        
+        # Convert rotation to cos/sin (columns 5-6)
+        rotation = raw_attrs[:, 3]
+        processed[:, 5] = np.cos(rotation)  # cos(rotation)
+        processed[:, 6] = np.sin(rotation)  # sin(rotation)
+        
+        # Keep color and random as-is (columns 7-10)
+        processed[:, 7] = raw_attrs[:, 4]   # r
+        processed[:, 8] = raw_attrs[:, 5]   # g  
+        processed[:, 9] = raw_attrs[:, 6]   # b
+        processed[:, 10] = raw_attrs[:, 7]  # uniform_random
+        
+        return processed
+
     def _prepare_attribute_tensors(self, synergy_indices: List[int]) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Prepare attribute tensors with synergy separation.
@@ -237,10 +280,13 @@ class SynergyDataset(Dataset):
         Returns:
             Tuple of (input_tensor, target_tensor)
         """
-        # Input: original attributes (no synergistic features)
-        input_attrs = torch.tensor(self.original_attrs, dtype=torch.float32, device=self.device)
+        # Preprocess raw 8D attributes to 11D processed attributes
+        processed_attrs = self._preprocess_attributes(self.original_attrs)
         
-        # Target: original attributes + synergistic features
+        # Input: processed attributes (no synergistic features)
+        input_attrs = torch.tensor(processed_attrs, dtype=torch.float32, device=self.device)
+        
+        # Target: processed attributes + synergistic features
         # Extract synergistic features from XOR data
         synergy_features = []
         for idx in synergy_indices:
