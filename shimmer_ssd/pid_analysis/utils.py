@@ -845,6 +845,10 @@ class LRFinder:
     def reset(self):
         self.model.load_state_dict(self.model_state)
         self.optimizer.load_state_dict(self.optimizer_state)
+        # Reset LR finding mode to enable visualizations after LR finder completes
+        if hasattr(self.model, 'set_lr_finding_mode'):
+            self.model.set_lr_finding_mode(False)
+            print("🎨 LR Finder: Reset visualization mode after LR finding")
 
     def range_test(self, train_loader: torch.utils.data.DataLoader, start_lr: float = 1e-9, end_lr: float = 1e5, num_iter: int = 500, step_mode: str = "exp", smooth_f: float = 0.05, diverge_th: float = 5.0):
         self.model.train()

@@ -309,7 +309,7 @@ class CEAlignment(nn.Module): #TODO give another name to this class
                 p_y_x2[:, c],  # col-marginal = p(y=c | x2) - no averaging
                 # Potentially pass chunk_size from this model if needed by sinkhorn
                 # chunk_size = self.chunk_size # If CEAlignment had self.chunk_size
-                log_to_wandb=True,  # Enable wandb logging for coupling matrices
+                log_to_wandb=False,  # ⚡ DISABLED: wandb logging for coupling matrices (was causing 500x slowdown)
                 wandb_prefix=f"coupling_cluster_{c}",  # Log each cluster separately
                 wandb_log_interval=25,  # Log every 25 iterations for more granular tracking
                 lr_finding_mode=lr_finding_mode,  # Skip expensive visualizations during LR finding
@@ -910,10 +910,12 @@ class CEAlignmentInformation(nn.Module): #TODO give another name to this class
         
         # 🔬 CRITICAL MATHEMATICAL CORRECTION: Proper PID computation on scalar MI terms
         # 1) Compute the global mutual information terms (scalars):
-        I_x1 = mi_x1_y.mean()  # I(X1;Y)
-        I_x2 = mi_x2_y.mean()  # I(X2;Y)
-        I_q = mi_x1x2_y.mean()  # I_q(X1,X2;Y) from coupling
-        I_p = mi_discrim_x1x2_y.mean()  # I_p(X1,X2;Y) from joint discriminator
+
+        #TODO: check again if the sum here is truly correct. It makes sense in the sense that mean divides by B (as we are summing over MI terms per xi, which are not proababilities, so sum !--_ mean)
+        I_x1 = mi_x1_y.sum()  # I(X1;Y)
+        I_x2 = mi_x2_y.sum()  # I(X2;Y)
+        I_q = mi_x1x2_y.sum()  # I_q(X1,X2;Y) from coupling
+        I_p = mi_discrim_x1x2_y.sum()  # I_p(X1,X2;Y) from joint discriminator
         
         # 2) Apply the Möbius relations on scalars:
         # Redundancy = I(X1;Y) + I(X2;Y) - I_q(X1,X2;Y)

@@ -430,6 +430,11 @@ def train_ce_alignment(model: CEAlignmentInformation, loader: DataLoader, optimi
             x1_batch, x2_batch, y_batch_orig = batch_data
             x1_batch, x2_batch, y_batch_orig = x1_batch.to(global_device), x2_batch.to(global_device), y_batch_orig.to(global_device)
             
+            # 🔬 DEBUG: Capture weights before training step
+            weights_before = None
+            if hasattr(model, 'debug_training_step'):
+                weights_before = model.debug_training_step(before_backward=True)
+            
             # Forward pass
             loss, pid_vals, _ = model(x1_batch, x2_batch, y_batch_orig)
             
@@ -437,6 +442,10 @@ def train_ce_alignment(model: CEAlignmentInformation, loader: DataLoader, optimi
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+            
+            # 🔬 DEBUG: Check gradients and weight updates after step
+            if hasattr(model, 'debug_training_step'):
+                model.debug_training_step(before_backward=False, weights_before=weights_before)
             
             # Store batch results
             epoch_loss += loss.item()

@@ -34,13 +34,14 @@ sys.path.insert(0, str(script_dir))
 
 # Import our synergy modules
 from synergy_dataset import SynergyDataset, create_synergy_dataloaders
-from synergy_losses import calculate_synergy_losses, process_synergy_batch
+from synergy_losses import create_synergy_loss_function, process_synergy_batch
 
-# Import from the original training script
+# Import from the original training script - reuse existing functions
 from losses_and_weights_GLW_training import (
     create_gw_model, load_domain_modules, save_checkpoint, load_checkpoint,
-    GWModuleConfigurableFusion
+    GWModuleConfigurableFusion, train_model, evaluate_model
 )
+import losses_and_weights_GLW_training
 
 # Try importing wandb
 try:
@@ -222,104 +223,36 @@ class SynergyTrainer:
         for split, dataloader in self.dataloaders.items():
             logger.info(f"{split}: {len(dataloader.dataset)} samples, {len(dataloader)} batches")
     
-    def train_epoch(
-        self,
-        loss_weights: Dict[str, float],
-        feature_names: Optional[Dict[str, List[str]]] = None
-    ) -> Dict[str, float]:
-        """Train for one epoch."""
-        self.model.train()
+    def create_synergy_dataloader_wrapper(self, split: str):
+        """Create a wrapper that converts synergy batches to standard format."""
+        original_loader = self.dataloaders[split]
         
-        epoch_losses = defaultdict(list)
-        num_batches = len(self.dataloaders['train'])
-        
-        for batch_idx, batch in enumerate(self.dataloaders['train']):
-            # Process batch
-            batch_inputs, batch_targets = process_synergy_batch(batch, self.device)
-            
-            # Zero gradients
-            self.optimizer.zero_grad()
-            
-            # Calculate synergy-aware losses
-            total_loss, loss_details = calculate_synergy_losses(
-                model=self.model,
-                batch_inputs=batch_inputs,
-                batch_targets=batch_targets,
-                synergy_config=self.config.synergy_config,
-                loss_weights=loss_weights,
-                criterion=self.criterion,
-                feature_names=feature_names
-            )
-            
-            # Backward pass
-            total_loss.backward()
-            
-            # Gradient clipping if configured
-            grad_clip = self.config.training.get('grad_clip')
-            if grad_clip:
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), grad_clip)
-            
-            # Optimizer step
-            self.optimizer.step()
-            
-            # Track losses
-            for key, value in loss_details.items():
-                epoch_losses[key].append(value)
-            
-            # Log progress
-            if batch_idx % 50 == 0:
-                logger.info(
-                    f"Epoch {self.current_epoch}, Batch {batch_idx}/{num_batches}: "
-                    f"Loss = {total_loss.item():.6f}"
-                )
-        
-        # Compute epoch averages
-        avg_losses = {key: np.mean(values) for key, values in epoch_losses.items()}
-        return avg_losses
-    
-    def validate_epoch(
-        self,
-        loss_weights: Dict[str, float],
-        feature_names: Optional[Dict[str, List[str]]] = None
-    ) -> Dict[str, float]:
-        """Validate for one epoch."""
-        if 'val' not in self.dataloaders:
-            return {}
-        
-        self.model.eval()
-        
-        epoch_losses = defaultdict(list)
-        
-        with torch.no_grad():
-            for batch in self.dataloaders['val']:
-                # Process batch
-                batch_inputs, batch_targets = process_synergy_batch(batch, self.device)
+        class SynergyDataLoaderWrapper:
+            def __init__(self, loader, device, synergy_config):
+                self.loader = loader
+                self.device = device 
+                self.synergy_config = synergy_config
                 
-                # Calculate synergy-aware losses
-                total_loss, loss_details = calculate_synergy_losses(
-                    model=self.model,
-                    batch_inputs=batch_inputs,
-                    batch_targets=batch_targets,
-                    synergy_config=self.config.synergy_config,
-                    loss_weights=loss_weights,
-                    criterion=self.criterion,
-                    feature_names=feature_names
-                )
-                
-                # Track losses
-                for key, value in loss_details.items():
-                    epoch_losses[key].append(value)
+            def __iter__(self):
+                for batch in self.loader:
+                    # Convert synergy batch to standard format
+                    # Use targets as the batch since existing loss functions expect input=target
+                    standard_batch = {}
+                    for domain, data in batch['targets'].items():
+                        standard_batch[domain] = data.to(self.device)
+                    yield standard_batch
+            
+            def __len__(self):
+                return len(self.loader)
         
-        # Compute epoch averages
-        avg_losses = {key: np.mean(values) for key, values in epoch_losses.items()}
-        return avg_losses
+        return SynergyDataLoaderWrapper(original_loader, self.device, self.config.synergy_config)
     
     def run_experiment(
         self,
         loss_config: Dict[str, Any],
         log_to_wandb: bool = True
     ) -> Dict[str, Any]:
-        """Run a single experiment with given loss configuration."""
+        """Run a single experiment using existing train_model function."""
         experiment_name = loss_config['name']
         loss_weights = loss_config['weights']
         epochs = loss_config.get('epochs', self.config.training.get('epochs', 50))
@@ -327,111 +260,59 @@ class SynergyTrainer:
         logger.info(f"Starting experiment: {experiment_name}")
         logger.info(f"Loss weights: {loss_weights}")
         
-        # Initialize wandb if requested
-        wandb_run = None
-        if log_to_wandb and HAS_WANDB:
-            wandb_run = wandb.init(
-                project=self.config.wandb_project,
-                entity=self.config.wandb_entity,
-                name=experiment_name,
-                config={
-                    'loss_weights': loss_weights,
-                    'model_config': {
-                        'workspace_dim': self.config.workspace_dim,
-                        'hidden_dim': self.config.hidden_dim,
-                        'n_layers': self.config.n_layers,
-                        'fusion_weights': self.config.fusion_weights
-                    },
-                    'synergy_config': self.config.synergy_config,
-                    'training_config': self.config.training
-                },
-                tags=['synergy-glw', f'ws{self.config.workspace_dim}']
+        # Create wrapped data loaders that convert synergy format to standard format
+        train_loader = self.create_synergy_dataloader_wrapper('train')
+        val_loader = self.create_synergy_dataloader_wrapper('val') if 'val' in self.dataloaders else None
+        
+        # Set up checkpoint directory
+        checkpoint_dir = Path(self.config.output_dir) / experiment_name
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Monkey-patch the loss function to add synergy tracking
+        original_calculate_losses = losses_and_weights_GLW_training.calculate_losses_with_weights
+        synergy_loss_function = create_synergy_loss_function(self.config.synergy_config)
+        losses_and_weights_GLW_training.calculate_losses_with_weights = synergy_loss_function
+        
+        try:
+            # Use existing train_model function - this reuses all existing training infrastructure!
+            trained_model, final_checkpoint = train_model(
+                model=self.model,
+                train_data_loader=train_loader,
+                val_data_loader=val_loader,
+                num_epochs=epochs,
+                learning_rate=self.config.training.get('optimizer', {}).get('lr', 1e-3),
+                device=str(self.device),
+                checkpoint_dir=str(checkpoint_dir),
+                checkpoint_interval=10,
+                run_name=experiment_name,
+                log_to_wandb=log_to_wandb,
+                wandb_project=self.config.wandb_project,
+                wandb_entity=self.config.wandb_entity,
+                short_circuit=False,
+                use_weighted_loss=False,  # We handle weighting in the loss function
+                loss_weights=loss_weights  # Pass our loss weights directly
             )
+        finally:
+            # Restore original loss function
+            losses_and_weights_GLW_training.calculate_losses_with_weights = original_calculate_losses
         
-        # Training loop
-        best_val_loss = float('inf')
-        best_epoch = 0
-        
-        for epoch in range(epochs):
-            self.current_epoch = epoch
-            
-            # Train
-            train_losses = self.train_epoch(loss_weights)
-            
-            # Validate
-            val_losses = self.validate_epoch(loss_weights)
-            
-            # Track losses
-            for key, value in train_losses.items():
-                self.training_history[f"train_{key}"].append(value)
-            for key, value in val_losses.items():
-                self.training_history[f"val_{key}"].append(value)
-            
-            # Log to wandb
-            if wandb_run:
-                log_dict = {}
-                log_dict.update({f"train/{k}": v for k, v in train_losses.items()})
-                log_dict.update({f"val/{k}": v for k, v in val_losses.items()})
-                log_dict['epoch'] = epoch
-                wandb_run.log(log_dict)
-            
-            # Check for best model
-            val_total_loss = val_losses.get('total_loss', float('inf'))
-            if val_total_loss < best_val_loss:
-                best_val_loss = val_total_loss
-                best_epoch = epoch
-                
-                # Save best model
-                checkpoint_dir = Path(self.config.output_dir) / experiment_name
-                checkpoint_dir.mkdir(parents=True, exist_ok=True)
-                
-                checkpoint_path = save_checkpoint(
-                    model=self.model,
-                    optimizer=self.optimizer,
-                    epoch=epoch,
-                    loss=val_total_loss,
-                    checkpoint_dir=str(checkpoint_dir),
-                    filename='best_model.pt',
-                    metadata={
-                        'experiment_name': experiment_name,
-                        'loss_weights': loss_weights,
-                        'synergy_config': self.config.synergy_config
-                    }
-                )
-                
-                logger.info(f"New best model at epoch {epoch}, val_loss={val_total_loss:.6f}")
-            
-            # Log progress
-            if epoch % 10 == 0 or epoch == epochs - 1:
-                train_total = train_losses.get('total_loss', 0)
-                val_total = val_losses.get('total_loss', 0)
-                
-                # Log synergy-specific losses if available
-                train_synergy = train_losses.get('fusion_attr_synergy_loss', 0)
-                val_synergy = val_losses.get('fusion_attr_synergy_loss', 0)
-                
-                logger.info(
-                    f"Epoch {epoch:3d}: "
-                    f"Train Loss = {train_total:.6f} (synergy: {train_synergy:.6f}), "
-                    f"Val Loss = {val_total:.6f} (synergy: {val_synergy:.6f})"
-                )
-        
-        # Finalize wandb run
-        if wandb_run:
-            wandb_run.finish()
+        # Get final metrics by evaluating the model
+        if val_loader:
+            final_val_loss = evaluate_model(trained_model, val_loader, str(self.device))
+        else:
+            final_val_loss = 0.0
         
         # Return experiment results
         results = {
             'experiment_name': experiment_name,
             'loss_weights': loss_weights,
-            'best_epoch': best_epoch,
-            'best_val_loss': best_val_loss,
-            'final_train_losses': train_losses,
-            'final_val_losses': val_losses
+            'best_epoch': epochs,  # train_model doesn't return best epoch, use final
+            'best_val_loss': final_val_loss,
+            'checkpoint_path': final_checkpoint
         }
         
         logger.info(f"Completed experiment: {experiment_name}")
-        logger.info(f"Best validation loss: {best_val_loss:.6f} at epoch {best_epoch}")
+        logger.info(f"Final validation loss: {final_val_loss:.6f}")
         
         return results
     
