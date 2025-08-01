@@ -158,9 +158,11 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
     ):
         """Calculate losses with synergy tracking - drop-in replacement for original function."""
         
-        # Extract synergy targets if they exist
-        synergy_targets = batch.pop('_synergy_targets', None)
-        pure_synergy_targets = batch.pop('_pure_synergy_targets', None)
+        # Extract synergy targets if they exist (avoid mutating original batch)
+        synergy_targets = batch.get('_synergy_targets', None)
+        if synergy_targets is not None:
+            # Create a clean batch copy without synergy targets for standard processing
+            batch = {k: v for k, v in batch.items() if k != '_synergy_targets'}
         
         # Use the original function for the main loss calculation
         from losses_and_weights_GLW_training import calculate_losses_with_weights
@@ -178,8 +180,8 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
             processed_inputs = {}
             for domain_name, domain_input in batch.items():
                 # Apply projector for text domain if it exists
-                if domain_name == 't' and hasattr(model, 'domain_modules') and hasattr(model.domain_modules[domain_name], 'projector'):
-                    projector = model.domain_modules[domain_name].projector
+                if domain_name == 't' and hasattr(model, 'domain_mods') and hasattr(model.domain_mods[domain_name], 'projector'):
+                    projector = model.domain_mods[domain_name].projector
                     processed_inputs[domain_name] = projector(domain_input)
                 else:
                     processed_inputs[domain_name] = domain_input
