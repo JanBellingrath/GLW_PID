@@ -187,9 +187,7 @@ class SynergyDataset(Dataset):
         for domain in domains:
             if domain == 'attr':
                 # Attribute domain: separate input from target
-                input_attrs, target_attrs = self._prepare_attribute_tensors(
-                    feature_indices[domain]
-                )
+                input_attrs, target_attrs = self._prepare_attribute_tensors(feature_indices[domain])
                 self.inputs[domain] = input_attrs
                 self.targets[domain] = target_attrs
                 
@@ -237,9 +235,8 @@ class SynergyDataset(Dataset):
             device=self.device
         )
         
-        # For synergy training: target includes both non-synergistic + synergistic features
-        # Model learns to reconstruct the full vector (including synergy) from inputs (without synergy)
-        # This maintains decoder dimension consistency while requiring synergy learning
+        # CLEAN SOLUTION: Return input (without synergy) and target (with synergy)
+        # We'll modify the decoder to handle the expanded output dimension
         target_attrs = torch.cat([input_attrs, synergy_tensor], dim=1)
         
         return input_attrs, target_attrs

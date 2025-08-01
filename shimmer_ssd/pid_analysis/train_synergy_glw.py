@@ -170,6 +170,67 @@ class SynergyTrainer:
         
         logger.info(f"Initialized SynergyTrainer on device: {self.device}")
     
+    def _create_synergy_gw_model(self, domain_modules):
+        """Create GW model with synergy-aware decoder dimensions."""
+        from shimmer.modules.gw_module import GWEncoder, GWDecoder
+        
+        # Create encoders and decoders with adjusted dimensions
+        gw_encoders = {}
+        gw_decoders = {}
+        
+        for domain_name, domain_module in domain_modules.items():
+            # Get base latent dimension
+            latent_dim = domain_module.latent_dim
+            
+            # Calculate output dimension based on synergy config
+            output_dim = latent_dim
+            if (domain_name in self.config.synergy_config.get('feature_indices', {}) and 
+                self.config.synergy_config['feature_indices'][domain_name]):
+                # Add synergy feature dimensions
+                synergy_features = len(self.config.synergy_config['feature_indices'][domain_name])
+                output_dim += synergy_features
+                logger.info(f"Expanding {domain_name} decoder output: {latent_dim} -> {output_dim} (+{synergy_features} synergy)")
+            
+            # Create encoder (input dimension stays the same)
+            gw_encoders[domain_name] = GWEncoder(
+                in_dim=latent_dim,
+                hidden_dim=self.config.hidden_dim,
+                out_dim=self.config.workspace_dim,
+                n_layers=self.config.n_layers,
+            )
+            
+            # Create decoder with expanded output dimension
+            gw_decoders[domain_name] = GWDecoder(
+                in_dim=self.config.workspace_dim,
+                hidden_dim=self.config.hidden_dim,
+                out_dim=output_dim,  # Expanded to include synergy features
+                n_layers=self.config.n_layers,
+            )
+        
+        # Create fusion weights
+        fusion_weights = self.config.fusion_weights.copy()
+        
+        # Create GW module
+        gw_module = GWModuleConfigurableFusion(
+            domain_modules=domain_modules,
+            workspace_dim=self.config.workspace_dim,
+            gw_encoders=gw_encoders,
+            gw_decoders=gw_decoders,
+            fusion_weights=fusion_weights,
+        )
+        
+        # Store architecture parameters
+        gw_module.hidden_dim = self.config.hidden_dim
+        gw_module.n_layers = self.config.n_layers
+        
+        # Freeze domain modules
+        for domain_name, domain_module in domain_modules.items():
+            for param in domain_module.parameters():
+                param.requires_grad = False
+            logger.info(f"Frozen domain module: {domain_name}")
+        
+        return gw_module
+    
     def setup_model(self):
         """Set up the Global Workspace model with pretrained domains."""
         logger.info("Setting up model...")
@@ -177,14 +238,8 @@ class SynergyTrainer:
         # Load domain modules
         domain_modules = load_domain_modules(self.config.domain_configs)
         
-        # Create GW model
-        self.model = create_gw_model(
-            domain_modules=domain_modules,
-            workspace_dim=self.config.workspace_dim,
-            hidden_dim=self.config.hidden_dim,
-            n_layers=self.config.n_layers,
-            fusion_weights=self.config.fusion_weights
-        )
+        # Create GW model with synergy-aware decoder dimensions
+        self.model = self._create_synergy_gw_model(domain_modules)
         
         self.model.to(self.device)
         

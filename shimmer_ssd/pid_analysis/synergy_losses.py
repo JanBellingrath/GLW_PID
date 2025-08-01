@@ -160,6 +160,7 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
         
         # Extract synergy targets if they exist
         synergy_targets = batch.pop('_synergy_targets', None)
+        pure_synergy_targets = batch.pop('_pure_synergy_targets', None)
         
         # Use the original function for the main loss calculation
         from losses_and_weights_GLW_training import calculate_losses_with_weights
