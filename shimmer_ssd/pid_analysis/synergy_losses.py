@@ -163,6 +163,11 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
         if synergy_targets is not None:
             # Create a clean batch copy without synergy targets for standard processing
             batch = {k: v for k, v in batch.items() if k != '_synergy_targets'}
+            # Move synergy targets to device
+            synergy_targets = {
+                domain: data.to(device) if hasattr(data, 'to') else data
+                for domain, data in synergy_targets.items()
+            }
         
         # Use the original function for the main loss calculation
         from losses_and_weights_GLW_training import calculate_losses_with_weights

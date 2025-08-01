@@ -1,0 +1,33 @@
+{
+  "workspace_dim": 12,
+  "hidden_dim": 32,
+  "n_layers": 3,
+  "domain_names": [
+    "v",
+    "attr",
+    "use_weights_for_loss"
+  ],
+  "fusion_weights": {
+    "v": 0.5,
+    "attr": 0.5,
+    "use_weights_for_loss": false
+  },
+  "timestamp": "20250801_081834",
+  "is_final": true,
+  "model_type": "GWModuleConfigurableFusion",
+  "train_loss": 0.0,
+  "run_name": "fusion_only",
+  "description": "Global Workspace model with configurable fusion weights",
+  "total_training_time": 28.743263,
+  "trainable_params": 15953,
+  "total_params": 15953,
+  "short_circuit": false,
+  "use_weighted_loss": false,
+  "loss_weights": {
+    "fusion": 1.0,
+    "demi_cycle": 0.0,
+    "cycle": 0.0
+  },
+  "val_loss": 0.0,
+  "best_val_loss": 0.0
+}

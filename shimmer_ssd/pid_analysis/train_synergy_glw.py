@@ -290,19 +290,24 @@ class SynergyTrainer:
                 
             def __iter__(self):
                 for batch in self.loader:
-                    # Convert synergy batch to standard format
+                    # Convert synergy batch to standard format that process_batch expects
                     # CRITICAL: Use INPUTS for encoding, TARGETS for loss computation
-                    # The existing loss functions will encode inputs and compare with targets
                     standard_batch = {}
-                    for domain, data in batch['inputs'].items():
-                        standard_batch[domain] = data.to(self.device)
                     
-                    # Store targets separately for loss computation
-                    # (The monkey-patched loss function will access these)
-                    standard_batch['_synergy_targets'] = {
-                        domain: data.to(self.device) 
-                        for domain, data in batch['targets'].items()
-                    }
+                    # Extract inputs from nested structure and create flat batch
+                    if isinstance(batch, dict) and 'inputs' in batch:
+                        # Our synergy dataset format
+                        for domain, data in batch['inputs'].items():
+                            # Don't call .to(device) here - let process_batch handle it
+                            standard_batch[domain] = data
+                        
+                        # Store targets separately for loss computation
+                        # (The monkey-patched loss function will access these)
+                        standard_batch['_synergy_targets'] = batch['targets']
+                    else:
+                        # Standard dataset format - pass through
+                        standard_batch = batch
+                    
                     yield standard_batch
             
             def __len__(self):
@@ -361,7 +366,14 @@ class SynergyTrainer:
         
         # Get final metrics by evaluating the model
         if val_loader:
-            final_val_loss = evaluate_model(trained_model, val_loader, str(self.device))
+            eval_result = evaluate_model(trained_model, val_loader, str(self.device))
+            # evaluate_model might return a tuple or dict, extract the loss value
+            if isinstance(eval_result, (tuple, list)):
+                final_val_loss = float(eval_result[0]) if eval_result else 0.0
+            elif isinstance(eval_result, dict):
+                final_val_loss = float(eval_result.get('total_loss', 0.0))
+            else:
+                final_val_loss = float(eval_result) if eval_result is not None else 0.0
         else:
             final_val_loss = 0.0
         
