@@ -2,12 +2,15 @@
 """
 Synergy Dataset for Global Workspace Training
 
-This dataset loads synthetic synergistic data where:
-- Inputs: visual data + non-synergistic attributes
-- Targets: visual data + attributes INCLUDING synergistic features
+This dataset loads real synergistic data where:
+- Inputs: VAE visual latents + non-synergistic attributes
+- Targets: VAE visual latents + attributes INCLUDING synergistic features
 
 The key insight: synergistic features should NOT be in inputs, only in targets.
 The model must learn to predict synergistic combinations from other modalities.
+
+Visual data is loaded from pre-saved VAE latents for performance.
+Attribute data is loaded from modified attribute files with XOR synergistic features.
 """
 
 import os
@@ -18,6 +21,12 @@ from torch.utils.data import Dataset
 from typing import Dict, List, Optional, Tuple, Any, Union
 from pathlib import Path
 import logging
+
+try:
+    import torchvision.transforms as T
+    TORCHVISION_AVAILABLE = True
+except ImportError:
+    TORCHVISION_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
@@ -92,12 +101,14 @@ class SynergyDataset(Dataset):
         feature_indices = self.synergy_config['feature_indices']
         
         for domain in domains:
-            if domain not in feature_indices:
-                raise ValueError(f"Domain '{domain}' has no feature indices specified")
-            
-            indices = feature_indices[domain]
-            if not isinstance(indices, (list, tuple)):
-                raise ValueError(f"Feature indices for domain '{domain}' must be list/tuple")
+            if domain in feature_indices:
+                indices = feature_indices[domain]
+                if not isinstance(indices, (list, tuple)):
+                    raise ValueError(f"Feature indices for domain '{domain}' must be list/tuple")
+            else:
+                # Visual domains may not need synergistic features
+                if domain not in ['v', 'v_latents']:
+                    raise ValueError(f"Domain '{domain}' has no feature indices specified")
         
         logger.info(f"Validated synergy config for domains: {domains}")
     
@@ -125,9 +136,8 @@ class SynergyDataset(Dataset):
         # Load original attribute data (for input features)
         self._load_original_attributes()
         
-        # Load image paths/data
-        if self.load_images:
-            self._load_image_data()
+        # Always try to load visual data (VAE latents or images)
+        self._load_image_data()
         
         # Prepare input and target tensors
         self._prepare_tensors()
@@ -156,24 +166,31 @@ class SynergyDataset(Dataset):
             )
     
     def _load_image_data(self):
-        """Load image data (either paths or precomputed features)."""
-        if self.image_dir:
-            # Load from image files
-            self.image_paths = []
-            for idx in range(len(self.xor_df)):
-                img_path = self.image_dir / f"{idx:06d}.png"
-                if not img_path.exists():
-                    raise FileNotFoundError(f"Image not found: {img_path}")
-                self.image_paths.append(img_path)
-        else:
+        """Load VAE latents or image data (prefer VAE latents for performance)."""
+        # First try to load VAE latents from saved_latents directory
+        vae_latents_loaded = self._try_load_vae_latents()
+        
+        if not vae_latents_loaded:
             # Try to load precomputed visual features
             visual_file = self.data_dir / f"{self.split}_visual_features.npy"
             if visual_file.exists():
                 self.visual_features = np.load(visual_file)
                 logger.info(f"Loaded precomputed visual features: {self.visual_features.shape}")
+            elif self.load_images and self.image_dir:
+                # Only load raw images if specifically requested
+                self.image_paths = []
+                for idx in range(len(self.xor_df)):
+                    img_path = self.image_dir / f"{idx:06d}.png"
+                    if not img_path.exists():
+                        raise FileNotFoundError(f"Image not found: {img_path}")
+                    self.image_paths.append(img_path)
             else:
-                logger.warning("No visual data found, will use dummy features")
-                self.visual_features = np.zeros((len(self.xor_df), 64))  # Dummy features
+                raise FileNotFoundError(
+                    f"No visual data found! Expected either:\n"
+                    f"  - VAE latents in saved_latents directory\n"
+                    f"  - Precomputed features at {visual_file}\n"
+                    f"  - Image directory specified with load_images=True for raw images"
+                )
     
     def _prepare_tensors(self):
         """Prepare input and target tensors with proper synergy separation."""
@@ -187,12 +204,17 @@ class SynergyDataset(Dataset):
         for domain in domains:
             if domain == 'attr':
                 # Attribute domain: separate input from target
-                input_attrs, target_attrs = self._prepare_attribute_tensors(feature_indices[domain])
+                if domain in feature_indices:
+                    input_attrs, target_attrs = self._prepare_attribute_tensors(feature_indices[domain])
+                else:
+                    # No synergistic features for this domain
+                    input_attrs = torch.tensor(self.original_attrs, dtype=torch.float32, device=self.device)
+                    target_attrs = input_attrs  # Same for both input and target
                 self.inputs[domain] = input_attrs
                 self.targets[domain] = target_attrs
                 
-            elif domain == 'v':
-                # Visual domain: same for input and target (for now)
+            elif domain in ['v', 'v_latents']:
+                # Visual domain: same for input and target (no synergistic features)
                 visual_data = self._prepare_visual_tensors()
                 self.inputs[domain] = visual_data
                 self.targets[domain] = visual_data
@@ -241,13 +263,90 @@ class SynergyDataset(Dataset):
         
         return input_attrs, target_attrs
     
+    def _try_load_vae_latents(self) -> bool:
+        """Try to load VAE latents from saved_latents directory."""
+        # Default VAE latents filename from GLW training
+        latent_filename = "calmip-822888_epoch=282-step=1105680_future.npy"
+        
+        # Look for VAE latents in the dataset structure
+        potential_paths = []
+        
+        if self.image_dir:
+            # Check if image_dir contains saved_latents
+            base_dataset_path = self.image_dir
+            if isinstance(base_dataset_path, str):
+                base_dataset_path = Path(base_dataset_path)
+            
+            # Try dataset_path/saved_latents/split/filename
+            latents_path = base_dataset_path / "saved_latents" / self.split / latent_filename
+            potential_paths.append(latents_path)
+            
+            # Try parent directory structure
+            parent_latents_path = base_dataset_path.parent / "saved_latents" / self.split / latent_filename
+            potential_paths.append(parent_latents_path)
+        
+        # Also check relative to data_dir
+        if hasattr(self, 'data_dir'):
+            relative_latents_path = self.data_dir.parent / "saved_latents" / self.split / latent_filename
+            potential_paths.append(relative_latents_path)
+        
+        for latents_path in potential_paths:
+            if latents_path.exists():
+                try:
+                    logger.info(f"Loading VAE latents from: {latents_path}")
+                    latents_data = np.load(latents_path)
+                    
+                    # Validate latent data
+                    if len(latents_data) < len(self.xor_df):
+                        logger.warning(
+                            f"VAE latents ({len(latents_data)}) have fewer samples than "
+                            f"XOR data ({len(self.xor_df)}). Using first {len(latents_data)} samples."
+                        )
+                        # Trim XOR data to match latents
+                        self.xor_df = self.xor_df.iloc[:len(latents_data)]
+                        self.original_attrs = self.original_attrs[:len(latents_data)]
+                    elif len(latents_data) > len(self.xor_df):
+                        logger.info(
+                            f"VAE latents ({len(latents_data)}) have more samples than "
+                            f"XOR data ({len(self.xor_df)}). Using first {len(self.xor_df)} latents."
+                        )
+                        latents_data = latents_data[:len(self.xor_df)]
+                    
+                    self.visual_features = latents_data
+                    logger.info(
+                        f"✅ Loaded {len(latents_data)} VAE latents: shape {latents_data.shape}, "
+                        f"range [{latents_data.min():.3f}, {latents_data.max():.3f}]"
+                    )
+                    return True
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to load VAE latents from {latents_path}: {e}")
+                    continue
+        
+        logger.warning(
+            f"Could not find VAE latents. Searched paths:\n" + 
+            "\n".join(f"  - {p}" for p in potential_paths)
+        )
+        return False
+    
     def _prepare_visual_tensors(self) -> torch.Tensor:
-        """Prepare visual tensors."""
+        """Prepare visual tensors from VAE latents or other visual data."""
         if hasattr(self, 'visual_features'):
-            return torch.tensor(self.visual_features, dtype=torch.float32, device=self.device)
+            visual_tensor = torch.tensor(self.visual_features, dtype=torch.float32, device=self.device)
+            
+            # Handle VAE latents: extract mean vector, drop logvar
+            if visual_tensor.dim() == 3 and visual_tensor.shape[1] == 2:
+                # VAE latents shape [N, 2, latent_dim] -> [N, latent_dim] (take mean, drop logvar)
+                visual_tensor = visual_tensor[:, 0, :]
+                logger.info(f"Extracted VAE mean vectors: {visual_tensor.shape}")
+            else:
+                logger.info(f"Prepared visual tensors: {visual_tensor.shape}")
+            
+            return visual_tensor
         else:
-            # Will load images on-demand
-            return torch.zeros((len(self.xor_df), 3, 64, 64), dtype=torch.float32, device=self.device)
+            raise RuntimeError(
+                "No visual data available. This should not happen if _load_image_data() succeeded."
+            )
     
     def __len__(self) -> int:
         """Return dataset size."""
@@ -292,7 +391,8 @@ class SynergyDataset(Dataset):
                 img = self.transform(img)
             else:
                 # Default transform: resize and normalize
-                import torchvision.transforms as T
+                if not TORCHVISION_AVAILABLE:
+                    raise ImportError("torchvision is required for image transforms but not available")
                 transform = T.Compose([
                     T.Resize((64, 64)),
                     T.ToTensor(),
@@ -343,6 +443,75 @@ class SynergyDataset(Dataset):
             'domains': domains,
             'feature_indices': synergy_features
         }
+
+
+def synergy_collate_fn(batch):
+    """Custom collate function for synergy dataset batches."""
+    from torch.utils.data._utils.collate import default_collate
+    import torch
+    
+    try:
+        # Handle empty batch
+        if not batch:
+            return {}
+            
+        # Separate inputs, targets, and metadata
+        inputs_batch = {}
+        targets_batch = {}
+        metadata_batch = []
+        
+        # Collect data from all samples in batch
+        for sample in batch:
+            if not isinstance(sample, dict):
+                raise ValueError(f"Expected dict sample, got {type(sample)}")
+                
+            # Collect inputs
+            if 'inputs' in sample:
+                for domain, data in sample['inputs'].items():
+                    if domain not in inputs_batch:
+                        inputs_batch[domain] = []
+                    inputs_batch[domain].append(data)
+            
+            # Collect targets
+            if 'targets' in sample:
+                for domain, data in sample['targets'].items():
+                    if domain not in targets_batch:
+                        targets_batch[domain] = []
+                    targets_batch[domain].append(data)
+                    
+            # Collect metadata
+            if 'metadata' in sample:
+                metadata_batch.append(sample['metadata'])
+        
+        # Batch the tensors using default collate with error handling
+        batched_inputs = {}
+        for domain, tensors in inputs_batch.items():
+            try:
+                # Use default_collate which handles tensors properly
+                batched_inputs[domain] = default_collate(tensors)
+            except Exception as e:
+                print(f"Warning: Collation error for input domain {domain}: {e}")
+                # Fallback: return as list if collation fails
+                batched_inputs[domain] = tensors
+        
+        batched_targets = {}
+        for domain, tensors in targets_batch.items():
+            try:
+                batched_targets[domain] = default_collate(tensors)
+            except Exception as e:
+                print(f"Warning: Collation error for target domain {domain}: {e}")
+                batched_targets[domain] = tensors
+        
+        return {
+            'inputs': batched_inputs,
+            'targets': batched_targets,
+            'metadata': metadata_batch
+        }
+        
+    except Exception as e:
+        print(f"Error in synergy_collate_fn: {e}")
+        # Final fallback: return batch as-is
+        return batch
 
 
 def create_synergy_dataloaders(
@@ -397,7 +566,8 @@ def create_synergy_dataloaders(
             shuffle=shuffle,
             num_workers=num_workers,
             pin_memory=(device is not None and device.type == 'cuda'),
-            drop_last=False
+            drop_last=False,
+            collate_fn=synergy_collate_fn
         )
         
         dataloaders[split] = dataloader

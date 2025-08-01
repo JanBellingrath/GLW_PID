@@ -158,16 +158,25 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
     ):
         """Calculate losses with synergy tracking - drop-in replacement for original function."""
         
-        # Extract synergy targets if they exist (avoid mutating original batch)
-        synergy_targets = batch.get('_synergy_targets', None)
-        if synergy_targets is not None:
-            # Create a clean batch copy without synergy targets for standard processing
-            batch = {k: v for k, v in batch.items() if k != '_synergy_targets'}
-            # Move synergy targets to device
-            synergy_targets = {
-                domain: data.to(device) if hasattr(data, 'to') else data
-                for domain, data in synergy_targets.items()
-            }
+        # Extract synergy targets from flattened format (avoid mutating original batch)
+        synergy_targets = {}
+        clean_batch = {}
+        
+        for key, value in batch.items():
+            if key.startswith('_target_'):
+                # Extract target domain name from key like '_target_v' -> 'v'
+                domain_name = key[8:]  # Remove '_target_' prefix
+                synergy_targets[domain_name] = value.to(device) if hasattr(value, 'to') else value
+            else:
+                # Keep non-target keys for standard processing
+                clean_batch[key] = value
+        
+        # Use clean batch without target keys
+        batch = clean_batch
+        
+        # Convert to None if no targets found (for compatibility)
+        if not synergy_targets:
+            synergy_targets = None
         
         # Use the original function for the main loss calculation
         from losses_and_weights_GLW_training import calculate_losses_with_weights

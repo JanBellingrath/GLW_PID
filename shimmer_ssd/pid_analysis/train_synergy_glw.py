@@ -301,9 +301,9 @@ class SynergyTrainer:
                             # Don't call .to(device) here - let process_batch handle it
                             standard_batch[domain] = data
                         
-                        # Store targets separately for loss computation
-                        # (The monkey-patched loss function will access these)
-                        standard_batch['_synergy_targets'] = batch['targets']
+                        # Flatten targets with prefix so process_batch can handle them as tensors
+                        for domain, data in batch['targets'].items():
+                            standard_batch[f'_target_{domain}'] = data
                     else:
                         # Standard dataset format - pass through
                         standard_batch = batch
