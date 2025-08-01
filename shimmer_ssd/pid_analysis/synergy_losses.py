@@ -158,43 +158,117 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
     ):
         """Calculate losses with synergy tracking - drop-in replacement for original function."""
         
+        # Extract synergy targets if they exist
+        synergy_targets = batch.pop('_synergy_targets', None)
+        
         # Use the original function for the main loss calculation
         from losses_and_weights_GLW_training import calculate_losses_with_weights
         
-        # Call original function
-        total_loss, loss_details = calculate_losses_with_weights(
-            model, batch, criterion, loss_weights, device
-        )
+        # CRITICAL FIX: For synergy training, we need to:
+        # 1. Encode the INPUTS (without synergy features)
+        # 2. Compare decoded outputs with TARGETS (with synergy features)
         
-        # Add synergy-specific metrics for fusion loss (if enabled)
-        if loss_weights.get('fusion', 0.0) > 0:
-            # Manually reconstruct to get decoded tensors for synergy analysis
-            processed_batch = {}
+        if synergy_targets is not None:
+            # This is synergy training - we need custom logic
+            total_loss = None
+            loss_details = {}
+            
+            # Process inputs for encoding
+            processed_inputs = {}
             for domain_name, domain_input in batch.items():
                 # Apply projector for text domain if it exists
-                if domain_name == 't' and hasattr(model.domain_mods[domain_name], 'projector'):
-                    projector = model.domain_mods[domain_name].projector
-                    processed_batch[domain_name] = projector(domain_input)
+                if domain_name == 't' and hasattr(model, 'domain_modules') and hasattr(model.domain_modules[domain_name], 'projector'):
+                    projector = model.domain_modules[domain_name].projector
+                    processed_inputs[domain_name] = projector(domain_input)
                 else:
-                    processed_batch[domain_name] = domain_input
+                    processed_inputs[domain_name] = domain_input
             
-            # Forward pass
-            encoded = {}
-            for domain_name, domain_input in processed_batch.items():
-                if domain_name in model.gw_encoders:
-                    encoded[domain_name] = model.gw_encoders[domain_name](domain_input)
-            
-            if encoded:
-                gw_state = model.fuse(encoded, selection_scores={})
-                decoded = {}
-                for domain_name in processed_batch.keys():
-                    if domain_name in model.gw_decoders:
-                        decoded[domain_name] = model.gw_decoders[domain_name](gw_state)
+            # 1. Fusion Loss with synergy training
+            if loss_weights.get('fusion', 0.0) > 0:
+                # Encode inputs
+                encoded = {}
+                for domain_name, domain_input in processed_inputs.items():
+                    if domain_name in model.gw_encoders:
+                        encoded[domain_name] = model.gw_encoders[domain_name](domain_input)
                 
-                # Add synergy metrics
-                loss_details = add_synergy_metrics_to_loss_details(
-                    loss_details, decoded, processed_batch, synergy_config, criterion, "fusion"
-                )
+                if encoded:
+                    # Fuse and decode
+                    gw_state = model.fuse(encoded, selection_scores={})
+                    decoded = {}
+                    for domain_name in synergy_targets.keys():
+                        if domain_name in model.gw_decoders:
+                            decoded[domain_name] = model.gw_decoders[domain_name](gw_state)
+                    
+                    # Calculate losses against TARGETS (with synergy features)
+                    fusion_loss = None
+                    num_domains = 0
+                    
+                    for domain_name, target in synergy_targets.items():
+                        if domain_name in decoded:
+                            domain_loss = criterion(decoded[domain_name], target)
+                            loss_details[f"fusion_{domain_name}_loss"] = domain_loss.item()
+                            
+                            if fusion_loss is None:
+                                fusion_loss = domain_loss
+                            else:
+                                fusion_loss = fusion_loss + domain_loss
+                            num_domains += 1
+                    
+                    # Average loss
+                    if fusion_loss is not None and num_domains > 1:
+                        fusion_loss = fusion_loss / num_domains
+                    
+                    # Add synergy metrics
+                    if fusion_loss is not None:
+                        loss_details = add_synergy_metrics_to_loss_details(
+                            loss_details, decoded, synergy_targets, synergy_config, criterion, "fusion"
+                        )
+                        
+                        weighted_fusion_loss = loss_weights['fusion'] * fusion_loss
+                        loss_details['weighted_fusion_loss'] = weighted_fusion_loss.item()
+                        loss_details['fusion_loss'] = fusion_loss.item()
+                        total_loss = weighted_fusion_loss
+            
+            # 2. Other losses (demi-cycle, cycle) - use standard approach with targets
+            # Restore the batch format for other losses
+            standard_batch = synergy_targets
+            
+            if loss_weights.get('demi_cycle', 0.0) > 0:
+                from losses_and_weights_GLW_training import calculate_demi_cycle_loss
+                demi_loss, demi_details = calculate_demi_cycle_loss(model, standard_batch, criterion)
+                loss_details.update(demi_details)
+                
+                weighted_demi_loss = loss_weights['demi_cycle'] * demi_loss
+                loss_details['weighted_demi_cycle_loss'] = weighted_demi_loss.item()
+                
+                if total_loss is None:
+                    total_loss = weighted_demi_loss
+                else:
+                    total_loss = total_loss + weighted_demi_loss
+            
+            if loss_weights.get('cycle', 0.0) > 0:
+                from losses_and_weights_GLW_training import calculate_cycle_loss
+                cycle_loss, cycle_details = calculate_cycle_loss(model, standard_batch, criterion)
+                loss_details.update(cycle_details)
+                
+                weighted_cycle_loss = loss_weights['cycle'] * cycle_loss
+                loss_details['weighted_cycle_loss'] = weighted_cycle_loss.item()
+                
+                if total_loss is None:
+                    total_loss = weighted_cycle_loss
+                else:
+                    total_loss = total_loss + weighted_cycle_loss
+            
+            if total_loss is None:
+                total_loss = torch.tensor(0.0, device=device)
+            
+            loss_details['total_loss'] = total_loss.item()
+            
+        else:
+            # Standard training - use original function
+            total_loss, loss_details = calculate_losses_with_weights(
+                model, batch, criterion, loss_weights, device
+            )
         
         return total_loss, loss_details
     

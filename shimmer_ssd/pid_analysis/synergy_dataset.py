@@ -237,7 +237,9 @@ class SynergyDataset(Dataset):
             device=self.device
         )
         
-        # Concatenate original attributes with synergistic features
+        # For synergy training: target includes both non-synergistic + synergistic features
+        # Model learns to reconstruct the full vector (including synergy) from inputs (without synergy)
+        # This maintains decoder dimension consistency while requiring synergy learning
         target_attrs = torch.cat([input_attrs, synergy_tensor], dim=1)
         
         return input_attrs, target_attrs

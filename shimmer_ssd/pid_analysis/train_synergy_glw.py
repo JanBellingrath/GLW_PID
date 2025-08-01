@@ -236,10 +236,18 @@ class SynergyTrainer:
             def __iter__(self):
                 for batch in self.loader:
                     # Convert synergy batch to standard format
-                    # Use targets as the batch since existing loss functions expect input=target
+                    # CRITICAL: Use INPUTS for encoding, TARGETS for loss computation
+                    # The existing loss functions will encode inputs and compare with targets
                     standard_batch = {}
-                    for domain, data in batch['targets'].items():
+                    for domain, data in batch['inputs'].items():
                         standard_batch[domain] = data.to(self.device)
+                    
+                    # Store targets separately for loss computation
+                    # (The monkey-patched loss function will access these)
+                    standard_batch['_synergy_targets'] = {
+                        domain: data.to(self.device) 
+                        for domain, data in batch['targets'].items()
+                    }
                     yield standard_batch
             
             def __len__(self):
