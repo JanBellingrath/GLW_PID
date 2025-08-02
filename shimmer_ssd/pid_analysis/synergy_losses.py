@@ -281,7 +281,7 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
             
             if loss_weights.get('demi_cycle', 0.0) > 0:
                 from losses_and_weights_GLW_training import calculate_demi_cycle_loss
-                demi_loss, demi_details = calculate_demi_cycle_loss(model, standard_batch, criterion)
+                demi_loss, demi_details = calculate_demi_cycle_loss(model, batch, criterion)
                 loss_details.update(demi_details)
                 
                 weighted_demi_loss = loss_weights['demi_cycle'] * demi_loss
@@ -294,7 +294,7 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
             
             if loss_weights.get('cycle', 0.0) > 0:
                 from losses_and_weights_GLW_training import calculate_cycle_loss
-                cycle_loss, cycle_details = calculate_cycle_loss(model, standard_batch, criterion)
+                cycle_loss, cycle_details = calculate_cycle_loss(model, batch, criterion)
                 loss_details.update(cycle_details)
                 
                 weighted_cycle_loss = loss_weights['cycle'] * cycle_loss
@@ -320,105 +320,6 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
     
     return synergy_calculate_losses_with_weights
 
-
-def calculate_synergy_aware_losses(
-    model,
-    batch_inputs: Dict[str, torch.Tensor],
-    batch_targets: Dict[str, torch.Tensor],
-    synergy_config: Dict[str, Any],
-    loss_weights: Dict[str, float],
-    criterion: torch.nn.Module
-) -> Tuple[torch.Tensor, Dict[str, float]]:
-    """
-    Calculate synergy-aware losses by extending existing loss functions.
-    
-    Args:
-        model: The GW model
-        batch_inputs: Input tensors per domain (synergy features excluded)
-        batch_targets: Target tensors per domain (synergy features included)
-        synergy_config: Synergy configuration
-        loss_weights: Loss weights
-        criterion: Loss function
-        
-    Returns:
-        Tuple of (total_loss, detailed_loss_dict)
-    """
-    # Convert to standard batch format for existing loss functions
-    # Use targets as the batch since existing functions expect input=target for reconstruction
-    processed_batch = batch_targets  # Standard reconstruction expects this
-    
-    total_loss = None
-    loss_details = {}
-    
-    # 1. Fusion Loss with synergy tracking
-    if loss_weights.get('fusion', 0.0) > 0:
-        # Use existing fusion loss calculation
-        fusion_loss, fusion_details = calculate_fusion_loss(
-            model, processed_batch, criterion, 
-            model.fusion_weights.get('use_weights_for_loss', False)
-        )
-        loss_details.update(fusion_details)
-        
-        # Add synergy-specific metrics
-        # We need to manually reconstruct to get decoded tensors for synergy analysis
-        encoded = {}
-        for domain_name, domain_input in batch_inputs.items():
-            if domain_name in model.gw_encoders:
-                encoded[domain_name] = model.gw_encoders[domain_name](domain_input)
-        
-        if encoded:
-            gw_state = model.fuse(encoded, selection_scores={})
-            decoded = {}
-            for domain_name in batch_targets.keys():
-                if domain_name in model.gw_decoders:
-                    decoded[domain_name] = model.gw_decoders[domain_name](gw_state)
-            
-            loss_details = add_synergy_metrics_to_loss_details(
-                loss_details, decoded, batch_targets, synergy_config, criterion, "fusion"
-            )
-        
-        weighted_fusion_loss = loss_weights['fusion'] * fusion_loss
-        loss_details['weighted_fusion_loss'] = weighted_fusion_loss.item()
-        
-        total_loss = weighted_fusion_loss
-    
-    # 2. Demi-Cycle Loss with synergy tracking
-    if loss_weights.get('demi_cycle', 0.0) > 0:
-        demi_loss, demi_details = calculate_demi_cycle_loss(model, processed_batch, criterion)
-        loss_details.update(demi_details)
-        
-        # TODO: Add synergy tracking for demi-cycle if needed
-        
-        weighted_demi_loss = loss_weights['demi_cycle'] * demi_loss
-        loss_details['weighted_demi_cycle_loss'] = weighted_demi_loss.item()
-        
-        if total_loss is None:
-            total_loss = weighted_demi_loss
-        else:
-            total_loss = total_loss + weighted_demi_loss
-    
-    # 3. Cycle Loss with synergy tracking
-    if loss_weights.get('cycle', 0.0) > 0:
-        cycle_loss, cycle_details = calculate_cycle_loss(model, processed_batch, criterion)
-        loss_details.update(cycle_details)
-        
-        # TODO: Add synergy tracking for cycle if needed
-        
-        weighted_cycle_loss = loss_weights['cycle'] * cycle_loss
-        loss_details['weighted_cycle_loss'] = weighted_cycle_loss.item()
-        
-        if total_loss is None:
-            total_loss = weighted_cycle_loss
-        else:
-            total_loss = total_loss + weighted_cycle_loss
-    
-    # Handle case where no losses were computed
-    if total_loss is None:
-        device = next(model.parameters()).device
-        total_loss = torch.tensor(0.0, device=device)
-    
-    loss_details['total_loss'] = total_loss.item()
-    return total_loss, loss_details
 
 
 def process_synergy_batch(
