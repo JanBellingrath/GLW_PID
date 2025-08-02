@@ -275,7 +275,7 @@ class SynergyDataset(Dataset):
         Prepare attribute tensors with synergy separation.
         
         Args:
-            synergy_indices: Indices of synergistic features in XOR data
+            synergy_indices: Not used - kept for compatibility. XOR feature is hardcoded.
             
         Returns:
             Tuple of (input_tensor, target_tensor)
@@ -287,24 +287,17 @@ class SynergyDataset(Dataset):
         input_attrs = torch.tensor(processed_attrs, dtype=torch.float32, device=self.device)
         
         # Target: processed attributes + synergistic features
-        # Extract synergistic features from XOR data
-        synergy_features = []
-        for idx in synergy_indices:
-            if isinstance(idx, str):
-                # Column name
-                synergy_features.append(self.xor_df[idx].values)
-            else:
-                # Numeric index
-                synergy_features.append(self.xor_df.iloc[:, idx].values)
+        # Extract XOR synergy feature by name (always "xor_target_normalized")
+        synergy_feature = self.xor_df["xor_target_normalized"].values
         
         synergy_tensor = torch.tensor(
-            np.column_stack(synergy_features), 
+            synergy_feature.reshape(-1, 1),  # Ensure 2D shape
             dtype=torch.float32, 
             device=self.device
         )
         
         # CLEAN SOLUTION: Return input (without synergy) and target (with synergy)
-        # We'll modify the decoder to handle the expanded output dimension
+        # The synergy feature will be at index 11 in the 12D target tensor
         target_attrs = torch.cat([input_attrs, synergy_tensor], dim=1)
         
         return input_attrs, target_attrs
