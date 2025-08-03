@@ -329,6 +329,23 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                 else:
                     total_loss = total_loss + weighted_cycle_loss
             
+            # 3. Translation Loss (cross-modal supervised learning on paired data)
+            if loss_weights.get('translation', 0.0) > 0:
+                from losses_and_weights_GLW_training import calculate_translation_loss, detect_paired_samples
+                # Detect paired samples for translation loss
+                paired_mask = detect_paired_samples(padded_batch, synergy_targets=synergy_targets)
+                # CRITICAL: Pass synergy_config to MASK OUT synergistic features - translation only learns non-synergistic features
+                translation_loss, translation_details = calculate_translation_loss(model, padded_batch, criterion, synergy_targets=synergy_targets, paired_mask=paired_mask, synergy_config=synergy_config)
+                loss_details.update(translation_details)
+                
+                weighted_translation_loss = loss_weights['translation'] * translation_loss
+                loss_details['weighted_translation_loss'] = weighted_translation_loss.item()
+                
+                if total_loss is None:
+                    total_loss = weighted_translation_loss
+                else:
+                    total_loss = total_loss + weighted_translation_loss
+            
             if total_loss is None:
                 total_loss = torch.tensor(0.0, device=device)
             

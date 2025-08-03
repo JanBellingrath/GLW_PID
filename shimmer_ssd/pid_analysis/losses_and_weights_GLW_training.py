@@ -1536,7 +1536,217 @@ def calculate_losses_with_weights(
         else:
             total_loss = total_loss + weighted_cycle_loss
     
+    # 4. Translation Loss (cross-modal supervised learning on paired data)
+    if loss_weights.get('translation', 0.0) > 0:
+        # Detect paired samples for translation loss
+        paired_mask = detect_paired_samples(processed_batch, synergy_targets=None)
+        # Note: In standard training, we don't have synergy targets, so translation uses input→input
+        translation_loss, translation_details = calculate_translation_loss(model, processed_batch, criterion, synergy_targets=None, paired_mask=paired_mask, synergy_config=None)
+        loss_details.update(translation_details)
+        
+        weighted_translation_loss = loss_weights['translation'] * translation_loss
+        loss_details['weighted_translation_loss'] = weighted_translation_loss.item()
+        
+        # Add to total loss
+        if total_loss is None:
+            total_loss = weighted_translation_loss
+        else:
+            total_loss = total_loss + weighted_translation_loss
+    
     return total_loss, loss_details
+
+def calculate_translation_loss(model, processed_batch, criterion, synergy_targets=None, paired_mask=None, synergy_config=None):
+    """
+    Calculate translation loss for cross-modal supervised learning on paired data.
+    
+    This loss enables the model to predict features from one domain using another domain:
+    - Visual → Attributes: Encode visual features, decode to attribute space (WITHOUT synergy)
+    - Attributes → Visual: Encode attributes, decode to visual space
+    
+    IMPORTANT: This loss MASKS OUT synergistic features and only operates on non-synergistic data.
+    This ensures the translation loss doesn't incorporate any signal from synergistic features.
+    
+    Only applies to samples where paired data is available across both domains.
+    
+    Args:
+        model: The GWModuleConfigurableFusion model
+        processed_batch: Batch of domain inputs (sources for encoding)
+        criterion: Loss function (e.g., nn.MSELoss())
+        synergy_targets: Optional dict of target tensors with synergy features
+        paired_mask: Optional boolean tensor indicating which samples are paired [batch_size]
+                    If None, assumes all samples are paired
+        synergy_config: Optional synergy configuration to identify and mask synergistic features
+        
+    Returns:
+        Tuple of (translation_loss, loss_details)
+    """
+    loss_details = {}
+    total_loss = None
+    num_translations = 0
+    
+    # Use synergy targets if available, otherwise fall back to inputs  
+    targets = synergy_targets if synergy_targets is not None else processed_batch
+    
+    # Get available domains for source and target
+    source_domains = list(processed_batch.keys())
+    target_domains = list(targets.keys())
+    
+    # Skip if we don't have at least 2 domains for translation
+    if len(source_domains) < 2 or len(target_domains) < 2:
+        return torch.tensor(0.0, device=next(model.parameters()).device), loss_details
+    
+    # Store original weights
+    original_weights = model.fusion_weights.copy()
+    
+    try:
+        # Calculate cross-modal translations only (avoid self-domain redundancy with demi-cycle)
+        for source_domain in source_domains:
+            for target_domain in target_domains:
+                # Skip self-domain translations (these are covered by demi-cycle loss)
+                if source_domain == target_domain:
+                    continue
+                    
+                # Check if encoders/decoders exist for this translation pair
+                if source_domain not in model.gw_encoders or target_domain not in model.gw_decoders:
+                    continue
+                
+                # Get source input and target ground truth
+                source_input = processed_batch[source_domain]
+                target_ground_truth = targets[target_domain]
+                
+                # Apply paired mask if provided
+                if paired_mask is not None:
+                    # Only compute translation loss for paired samples
+                    if not paired_mask.any():
+                        # No paired samples in this batch, skip this translation
+                        continue
+                        
+                    # Filter to only paired samples
+                    source_input = source_input[paired_mask]
+                    target_ground_truth = target_ground_truth[paired_mask]
+                    
+                    if source_input.size(0) == 0:
+                        # No paired samples after filtering
+                        continue
+                
+                # Set weights for source domain only (translation mode)
+                translation_weights = {d: 0.0 for d in model.fusion_weights.keys()}
+                translation_weights[source_domain] = 1.0
+                model.fusion_weights.update(translation_weights)
+                
+                # 1. Encode source domain to global workspace
+                encoded_source = model.gw_encoders[source_domain](source_input)
+                
+                # 2. Apply activation (tanh) to get global workspace state
+                gw_state = torch.tanh(encoded_source)
+                
+                # 3. Decode to target domain
+                translated_output = model.gw_decoders[target_domain](gw_state)
+                
+                # 4. Mask out synergistic features and calculate translation loss ONLY on non-synergistic data
+                if synergy_config is not None:
+                    # Import extract_synergy_features function
+                    try:
+                        from synergy_losses import extract_synergy_features
+                    except ImportError:
+                        # Import from current directory if synergy_losses module not found
+                        sys.path.insert(0, os.path.dirname(__file__))
+                        from synergy_losses import extract_synergy_features
+                    
+                    # Extract non-synergistic features from predicted output
+                    _, translated_non_synergy = extract_synergy_features(
+                        translated_output, target_domain, synergy_config
+                    )
+                    
+                    # Extract non-synergistic features from ground truth target
+                    _, target_non_synergy = extract_synergy_features(
+                        target_ground_truth, target_domain, synergy_config
+                    )
+                    
+                    # Calculate translation loss ONLY on non-synergistic features
+                    if translated_non_synergy.numel() > 0 and target_non_synergy.numel() > 0:
+                        translation_loss = criterion(translated_non_synergy, target_non_synergy)
+                        loss_details[f"translation_{source_domain}_to_{target_domain}_non_synergy_loss"] = translation_loss.item()
+                        loss_details[f"translation_{source_domain}_to_{target_domain}_masked_synergy"] = True
+                    else:
+                        # No non-synergistic features available, skip this translation
+                        translation_loss = torch.tensor(0.0, device=translated_output.device)
+                        loss_details[f"translation_{source_domain}_to_{target_domain}_skipped"] = True
+                        loss_details[f"translation_{source_domain}_to_{target_domain}_masked_synergy"] = True
+                        continue
+                else:
+                    # No synergy config provided, use full features (original behavior)
+                    translation_loss = criterion(translated_output, target_ground_truth)
+                    loss_details[f"translation_{source_domain}_to_{target_domain}_loss"] = translation_loss.item()
+                    loss_details[f"translation_{source_domain}_to_{target_domain}_masked_synergy"] = False
+                
+                # Add paired sample count info
+                if paired_mask is not None:
+                    paired_count = paired_mask.sum().item()
+                    total_count = paired_mask.size(0)
+                    loss_details[f"translation_{source_domain}_to_{target_domain}_paired_samples"] = paired_count
+                    loss_details[f"translation_{source_domain}_to_{target_domain}_total_samples"] = total_count
+                
+                # 5. Add to total loss
+                if total_loss is None:
+                    total_loss = translation_loss
+                else:
+                    total_loss = total_loss + translation_loss
+                    
+                num_translations += 1
+        
+        # Average the loss across all translation pairs
+        if total_loss is not None and num_translations > 1:
+            total_loss = total_loss / num_translations
+            
+    finally:
+        # Restore original weights
+        model.fusion_weights.update(original_weights)
+    
+    # Return zero loss if no translations were processed
+    if total_loss is None:
+        total_loss = torch.tensor(0.0, device=next(model.parameters()).device)
+        
+    loss_details['translation_loss'] = total_loss.item()
+    loss_details['num_translation_pairs'] = num_translations
+    
+    return total_loss, loss_details
+
+
+def detect_paired_samples(processed_batch, synergy_targets=None):
+    """
+    Detect which samples in the batch have paired data across modalities.
+    
+    For the current synergy dataset, all samples are paired by construction since
+    each sample has both visual and attribute data for the same shape object.
+    
+    Args:
+        processed_batch: Batch of domain inputs
+        synergy_targets: Optional dict of target tensors
+        
+    Returns:
+        Boolean tensor of shape [batch_size] indicating paired samples
+    """
+    # Get batch size from any domain
+    domains = list(processed_batch.keys())
+    if not domains:
+        return None
+        
+    batch_size = processed_batch[domains[0]].size(0)
+    
+    # For synergy dataset: all samples are paired by construction
+    # In future, this could be extended to check for actual pairing conditions
+    paired_mask = torch.ones(batch_size, dtype=torch.bool, device=processed_batch[domains[0]].device)
+    
+    # Future enhancement: check if synergy_targets exist for all domains
+    # if synergy_targets is not None:
+    #     for domain in domains:
+    #         if domain in synergy_targets:
+    #             # Could add more sophisticated pairing checks here
+    #             pass
+    
+    return paired_mask
+
 
 def calculate_fusion_loss(model, processed_batch, criterion, use_weights_for_loss=False):
     """Calculate fusion loss (encode all domains, fuse, decode all domains).
