@@ -19,8 +19,8 @@
       }
     ],
     "workspace_dim": 12,
-    "hidden_dim": 32,
-    "n_layers": 3,
+    "hidden_dim": 16,
+    "n_layers": 2,
     "fusion_weights": {
       "v": 0.5,
       "attr": 0.5
@@ -51,7 +51,8 @@
         "weights": {
           "fusion": 1.0,
           "demi_cycle": 0.0,
-          "cycle": 0.0
+          "cycle": 0.0,
+          "translation": 0.0
         }
       },
       {
@@ -60,7 +61,8 @@
         "weights": {
           "fusion": 0.0,
           "demi_cycle": 1.0,
-          "cycle": 0.0
+          "cycle": 0.0,
+          "translation": 0.0
         }
       },
       {
@@ -69,16 +71,38 @@
         "weights": {
           "fusion": 0.0,
           "demi_cycle": 0.0,
-          "cycle": 1.0
+          "cycle": 1.0,
+          "translation": 0.0
+        }
+      },
+      {
+        "name": "translation_only",
+        "description": "Test cross-modal supervised translation learning",
+        "weights": {
+          "fusion": 0.0,
+          "demi_cycle": 0.0,
+          "cycle": 0.0,
+          "translation": 1.0
+        }
+      },
+      {
+        "name": "fusion_translation",
+        "description": "Combine fusion and translation losses",
+        "weights": {
+          "fusion": 0.5,
+          "demi_cycle": 0.0,
+          "cycle": 0.0,
+          "translation": 0.5
         }
       },
       {
         "name": "all_losses",
-        "description": "Combined training with all loss types",
+        "description": "Combined training with all loss types including translation",
         "weights": {
-          "fusion": 0.4,
-          "demi_cycle": 0.3,
-          "cycle": 0.3
+          "fusion": 0.3,
+          "demi_cycle": 0.2,
+          "cycle": 0.2,
+          "translation": 0.3
         }
       }
     ]

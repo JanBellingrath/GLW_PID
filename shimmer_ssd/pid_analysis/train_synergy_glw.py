@@ -7,8 +7,9 @@ This script trains models to predict synergistic targets (e.g., XOR combinations
 from input modalities while monitoring both overall and synergy-specific losses.
 
 Key features:
-- Supports fusion, demi-cycle, and cycle loss combinations
-- Separates inputs from synergistic targets properly
+- Supports fusion, demi-cycle, cycle, and translation loss combinations
+- Separates inputs from synergistic targets properly  
+- Cross-modal supervised translation learning on paired data
 - Comprehensive WandB logging of synergy metrics
 - Flexible experiment configuration
 - Compatible with pretrained domain modules
@@ -496,19 +497,23 @@ def create_default_config() -> Dict[str, Any]:
             "loss_configs": [
                 {
                     "name": "fusion_only",
-                    "weights": {"fusion": 1.0, "demi_cycle": 0.0, "cycle": 0.0}
+                    "weights": {"fusion": 1.0, "demi_cycle": 0.0, "cycle": 0.0, "translation": 0.0}
                 },
                 {
                     "name": "fusion_demi",
-                    "weights": {"fusion": 1.0, "demi_cycle": 1.0, "cycle": 0.0}
+                    "weights": {"fusion": 1.0, "demi_cycle": 1.0, "cycle": 0.0, "translation": 0.0}
                 },
                 {
                     "name": "fusion_cycle",
-                    "weights": {"fusion": 1.0, "demi_cycle": 0.0, "cycle": 1.0}
+                    "weights": {"fusion": 1.0, "demi_cycle": 0.0, "cycle": 1.0, "translation": 0.0}
+                },
+                {
+                    "name": "translation_only",
+                    "weights": {"fusion": 0.0, "demi_cycle": 0.0, "cycle": 0.0, "translation": 1.0}
                 },
                 {
                     "name": "all_losses",
-                    "weights": {"fusion": 1.0, "demi_cycle": 1.0, "cycle": 1.0}
+                    "weights": {"fusion": 0.5, "demi_cycle": 0.5, "cycle": 0.5, "translation": 0.5}
                 }
             ]
         },
