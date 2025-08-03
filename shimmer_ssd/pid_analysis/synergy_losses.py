@@ -22,6 +22,25 @@ from losses_and_weights_GLW_training import (
 logger = logging.getLogger(__name__)
 
 
+def pad_attr_input_for_encoder(domain_input: torch.Tensor, domain_name: str) -> torch.Tensor:
+    """
+    Pad attribute domain input from 11D to 12D for encoder compatibility.
+    
+    Args:
+        domain_input: Input tensor for the domain
+        domain_name: Name of the domain
+        
+    Returns:
+        Padded input tensor (12D for attr domain, unchanged for others)
+    """
+    if domain_name == 'attr':
+        # Pad 11D attribute input to 12D with zeros
+        padding = torch.zeros_like(domain_input[:, :1])  # Create 1D padding of same shape as batch
+        return torch.cat([domain_input, padding], dim=1)
+    else:
+        return domain_input
+
+
 def extract_synergy_features(
     tensor: torch.Tensor, 
     domain: str,
@@ -206,20 +225,23 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                 encoded = {}
                 for domain_name, domain_input in processed_inputs.items():
                     if domain_name in model.gw_encoders:
+                        # Pad attribute inputs for encoder compatibility
+                        padded_input = pad_attr_input_for_encoder(domain_input, domain_name)
+                        
                         # For attribute domain: skip domain module, use preprocessed data directly
                         if domain_name == 'attr':
-                            # domain_input is already 11D preprocessed attributes
-                            encoded[domain_name] = model.gw_encoders[domain_name](domain_input)
+                            # padded_input is now 12D (11D preprocessed attributes + 1D padding)
+                            encoded[domain_name] = model.gw_encoders[domain_name](padded_input)
                         elif domain_name == 'v':
                             # domain_input is already VAE latents (12D), bypass domain module
-                            encoded[domain_name] = model.gw_encoders[domain_name](domain_input)
+                            encoded[domain_name] = model.gw_encoders[domain_name](padded_input)
                         else:
                             # For other domains: use domain module first, then GW encoder
                             if domain_name in model.domain_mods:
-                                domain_latent = model.domain_mods[domain_name](domain_input)
+                                domain_latent = model.domain_mods[domain_name](padded_input)
                                 encoded[domain_name] = model.gw_encoders[domain_name](domain_latent)
                             else:
-                                encoded[domain_name] = model.gw_encoders[domain_name](domain_input)
+                                encoded[domain_name] = model.gw_encoders[domain_name](padded_input)
                 
                 if encoded:
                     # Fuse and decode
@@ -275,13 +297,15 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                         loss_details['fusion_loss'] = fusion_loss.item()
                         total_loss = weighted_fusion_loss
             
-            # 2. Other losses (demi-cycle, cycle) - skip for now with synergy training
-            # These losses assume standard domain module behavior which we've bypassed for attr
-            # TODO: Implement synergy-compatible versions if needed
+            # 2. Demi-cycle and cycle losses with padding for encoder compatibility
+            # Create a modified batch with padded attribute inputs for these losses
+            padded_batch = {}
+            for domain_name, domain_input in batch.items():
+                padded_batch[domain_name] = pad_attr_input_for_encoder(domain_input, domain_name)
             
             if loss_weights.get('demi_cycle', 0.0) > 0:
                 from losses_and_weights_GLW_training import calculate_demi_cycle_loss
-                demi_loss, demi_details = calculate_demi_cycle_loss(model, batch, criterion)
+                demi_loss, demi_details = calculate_demi_cycle_loss(model, padded_batch, criterion)
                 loss_details.update(demi_details)
                 
                 weighted_demi_loss = loss_weights['demi_cycle'] * demi_loss
@@ -294,7 +318,7 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
             
             if loss_weights.get('cycle', 0.0) > 0:
                 from losses_and_weights_GLW_training import calculate_cycle_loss
-                cycle_loss, cycle_details = calculate_cycle_loss(model, batch, criterion)
+                cycle_loss, cycle_details = calculate_cycle_loss(model, padded_batch, criterion)
                 loss_details.update(cycle_details)
                 
                 weighted_cycle_loss = loss_weights['cycle'] * cycle_loss

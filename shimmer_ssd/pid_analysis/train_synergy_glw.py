@@ -28,6 +28,11 @@ from typing import Dict, List, Optional, Tuple, Any
 from collections import defaultdict
 import numpy as np
 
+# Limit GPU memory usage to 10GB on 40GB GPU
+if torch.cuda.is_available():
+    torch.cuda.set_per_process_memory_fraction(0.25)  # 10GB / 40GB = 0.25
+    print(f"🔒 GPU memory limited to 10GB (25% of 40GB GPU)")
+
 # Add path setup for imports
 script_dir = Path(__file__).parent
 sys.path.insert(0, str(script_dir))
@@ -184,8 +189,8 @@ class SynergyTrainer:
             
             # Special handling for domains that bypass domain modules
             if domain_name == 'attr':
-                input_dim = 11  # Our preprocessed attributes are 11D
-                logger.info(f"Attribute domain: bypassing domain module, using 11D preprocessed input directly")
+                input_dim = 12  # Enlarged to 12D to match decoder output for cycle compatibility
+                logger.info(f"Attribute domain: bypassing domain module, using 12D input (11D + 1D padding) for cycle compatibility")
             elif domain_name == 'v':
                 input_dim = 12  # VAE latents are 12D
                 logger.info(f"Visual domain: bypassing domain module, using 12D VAE latents directly")
