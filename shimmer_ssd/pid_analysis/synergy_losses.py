@@ -2,9 +2,13 @@
 """
 Synergy-Aware Loss Extensions for Global Workspace Training
 
-Minimal extensions to existing loss framework to add synergy feature tracking:
-- Reuses existing calculate_fusion_loss, calculate_demi_cycle_loss, calculate_cycle_loss
-- Adds synergy-specific loss decomposition and logging
+Clean synergy loss implementation following the principle that only fusion loss 
+sees synergy features, while all other losses operate purely on base features:
+
+- Fusion loss: Encodes 11D attr inputs, decodes to full target (11D + synergy)
+- Demi-cycle & cycle losses: Only compare first 11D of reconstructions vs 11D inputs
+- Translation loss: Masks out synergy features, learns only non-synergistic mappings
+- No padding logic - encoders and decoders handle exact dimensions needed
 - Maintains full compatibility with existing training infrastructure
 """
 
@@ -22,23 +26,7 @@ from losses_and_weights_GLW_training import (
 logger = logging.getLogger(__name__)
 
 
-def pad_attr_input_for_encoder(domain_input: torch.Tensor, domain_name: str) -> torch.Tensor:
-    """
-    Pad attribute domain input from 11D to 12D for encoder compatibility.
-    
-    Args:
-        domain_input: Input tensor for the domain
-        domain_name: Name of the domain
-        
-    Returns:
-        Padded input tensor (12D for attr domain, unchanged for others)
-    """
-    if domain_name == 'attr':
-        # Pad 11D attribute input to 12D with zeros
-        padding = torch.zeros_like(domain_input[:, :1])  # Create 1D padding of same shape as batch
-        return torch.cat([domain_input, padding], dim=1)
-    else:
-        return domain_input
+
 
 
 def extract_synergy_features(
@@ -225,23 +213,20 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                 encoded = {}
                 for domain_name, domain_input in processed_inputs.items():
                     if domain_name in model.gw_encoders:
-                        # Pad attribute inputs for encoder compatibility
-                        padded_input = pad_attr_input_for_encoder(domain_input, domain_name)
-                        
                         # For attribute domain: skip domain module, use preprocessed data directly
                         if domain_name == 'attr':
-                            # padded_input is now 12D (11D preprocessed attributes + 1D padding)
-                            encoded[domain_name] = model.gw_encoders[domain_name](padded_input)
+                            # domain_input is 11D preprocessed attributes (no padding needed)
+                            encoded[domain_name] = model.gw_encoders[domain_name](domain_input)
                         elif domain_name == 'v':
                             # domain_input is already VAE latents (12D), bypass domain module
-                            encoded[domain_name] = model.gw_encoders[domain_name](padded_input)
+                            encoded[domain_name] = model.gw_encoders[domain_name](domain_input)
                         else:
                             # For other domains: use domain module first, then GW encoder
                             if domain_name in model.domain_mods:
-                                domain_latent = model.domain_mods[domain_name](padded_input)
+                                domain_latent = model.domain_mods[domain_name](domain_input)
                                 encoded[domain_name] = model.gw_encoders[domain_name](domain_latent)
                             else:
-                                encoded[domain_name] = model.gw_encoders[domain_name](padded_input)
+                                encoded[domain_name] = model.gw_encoders[domain_name](domain_input)
                 
                 if encoded:
                     # Fuse and decode
@@ -254,10 +239,10 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                             
                             # For domains without domain modules: decoded output is already in target space
                             if domain_name == 'attr':
-                                # decoded_latent is already in 11D attribute space
+                                # decoded_latent includes base (11D) + synergy features
                                 decoded[domain_name] = decoded_latent
                             elif domain_name == 'v':
-                                # decoded_latent is already in VAE latent space (12D)
+                                # decoded_latent is already in VAE latent space
                                 decoded[domain_name] = decoded_latent
                             else:
                                 # For other domains: use domain module decoder if available
@@ -267,13 +252,41 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                                 else:
                                     decoded[domain_name] = decoded_latent
                     
-                    # Calculate losses against TARGETS (with synergy features)
+                    # Calculate losses against TARGETS (with synergy features) 
+                    # Apply synergy loss scaling to give more weight to synergy features
                     fusion_loss = None
                     num_domains = 0
+                    synergy_loss_scale = synergy_config.get('loss_scale', 1.0)
                     
                     for domain_name, target in synergy_targets.items():
                         if domain_name in decoded:
-                            domain_loss = criterion(decoded[domain_name], target)
+                            # Extract synergy and non-synergy components for scaled loss
+                            synergy_target, non_synergy_target = extract_synergy_features(
+                                target, domain_name, synergy_config
+                            )
+                            synergy_recon, non_synergy_recon = extract_synergy_features(
+                                decoded[domain_name], domain_name, synergy_config
+                            )
+                            
+                            # Calculate separate losses
+                            domain_loss = 0.0
+                            if non_synergy_target.numel() > 0:
+                                non_synergy_loss = criterion(non_synergy_recon, non_synergy_target)
+                                domain_loss += non_synergy_loss
+                                loss_details[f"fusion_{domain_name}_non_synergy_loss"] = non_synergy_loss.item()
+                            
+                            if synergy_target.numel() > 0:
+                                synergy_loss = criterion(synergy_recon, synergy_target)
+                                # Apply scaling to synergy component
+                                scaled_synergy_loss = synergy_loss_scale * synergy_loss
+                                domain_loss += scaled_synergy_loss
+                                loss_details[f"fusion_{domain_name}_synergy_loss"] = synergy_loss.item()
+                                loss_details[f"fusion_{domain_name}_synergy_loss_scaled"] = scaled_synergy_loss.item()
+                            
+                            # Convert to tensor if needed
+                            if not isinstance(domain_loss, torch.Tensor):
+                                domain_loss = torch.tensor(domain_loss, device=target.device)
+                            
                             loss_details[f"fusion_{domain_name}_loss"] = domain_loss.item()
                             
                             if fusion_loss is None:
@@ -286,26 +299,52 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                     if fusion_loss is not None and num_domains > 1:
                         fusion_loss = fusion_loss / num_domains
                     
-                    # Add synergy metrics
+                    # Synergy metrics already computed inline above
                     if fusion_loss is not None:
-                        loss_details = add_synergy_metrics_to_loss_details(
-                            loss_details, decoded, synergy_targets, synergy_config, criterion, "fusion"
-                        )
-                        
                         weighted_fusion_loss = loss_weights['fusion'] * fusion_loss
                         loss_details['weighted_fusion_loss'] = weighted_fusion_loss.item()
                         loss_details['fusion_loss'] = fusion_loss.item()
+                        loss_details['synergy_loss_scale'] = synergy_loss_scale
                         total_loss = weighted_fusion_loss
             
-            # 2. Demi-cycle and cycle losses with padding for encoder compatibility
-            # Create a modified batch with padded attribute inputs for these losses
-            padded_batch = {}
-            for domain_name, domain_input in batch.items():
-                padded_batch[domain_name] = pad_attr_input_for_encoder(domain_input, domain_name)
+            # 2. Demi-cycle and cycle losses - ignore synergy features entirely
+            # Use original functions but only compare base dimensions for attr domain
             
             if loss_weights.get('demi_cycle', 0.0) > 0:
                 from losses_and_weights_GLW_training import calculate_demi_cycle_loss
-                demi_loss, demi_details = calculate_demi_cycle_loss(model, padded_batch, criterion)
+                # Monkey-patch model decoders temporarily to only output base features for attr
+                original_attr_decoder = None
+                if 'attr' in model.gw_decoders:
+                    original_attr_decoder = model.gw_decoders['attr']
+                    
+                    # Create a proper Module wrapper
+                    class AttrBaseDecoderWrapper(torch.nn.Module):
+                        def __init__(self, original_decoder, synergy_config):
+                            super().__init__()
+                            self.original_decoder = original_decoder
+                            self.synergy_config = synergy_config
+                        
+                        def forward(self, x):
+                            full_output = self.original_decoder(x)
+                            # Calculate base feature count from synergy config
+                            feature_indices = self.synergy_config.get('feature_indices', {})
+                            if 'attr' in feature_indices:
+                                # Total features minus synergy features = base features
+                                synergy_count = len(feature_indices['attr'])
+                                base_count = full_output.shape[-1] - synergy_count
+                            else:
+                                base_count = 11  # Default for attr domain
+                            return full_output[..., :base_count]
+                    
+                    model.gw_decoders['attr'] = AttrBaseDecoderWrapper(original_attr_decoder, synergy_config)
+                
+                try:
+                    demi_loss, demi_details = calculate_demi_cycle_loss(model, batch, criterion)
+                finally:
+                    # Restore original decoder
+                    if original_attr_decoder is not None:
+                        model.gw_decoders['attr'] = original_attr_decoder
+                
                 loss_details.update(demi_details)
                 
                 weighted_demi_loss = loss_weights['demi_cycle'] * demi_loss
@@ -318,7 +357,39 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
             
             if loss_weights.get('cycle', 0.0) > 0:
                 from losses_and_weights_GLW_training import calculate_cycle_loss
-                cycle_loss, cycle_details = calculate_cycle_loss(model, padded_batch, criterion)
+                # Monkey-patch model decoders temporarily to only output base features for attr
+                original_attr_decoder = None
+                if 'attr' in model.gw_decoders:
+                    original_attr_decoder = model.gw_decoders['attr']
+                    
+                    # Create a proper Module wrapper
+                    class AttrBaseDecoderWrapper(torch.nn.Module):
+                        def __init__(self, original_decoder, synergy_config):
+                            super().__init__()
+                            self.original_decoder = original_decoder
+                            self.synergy_config = synergy_config
+                        
+                        def forward(self, x):
+                            full_output = self.original_decoder(x)
+                            # Calculate base feature count from synergy config
+                            feature_indices = self.synergy_config.get('feature_indices', {})
+                            if 'attr' in feature_indices:
+                                # Total features minus synergy features = base features
+                                synergy_count = len(feature_indices['attr'])
+                                base_count = full_output.shape[-1] - synergy_count
+                            else:
+                                base_count = 11  # Default for attr domain
+                            return full_output[..., :base_count]
+                    
+                    model.gw_decoders['attr'] = AttrBaseDecoderWrapper(original_attr_decoder, synergy_config)
+                
+                try:
+                    cycle_loss, cycle_details = calculate_cycle_loss(model, batch, criterion)
+                finally:
+                    # Restore original decoder
+                    if original_attr_decoder is not None:
+                        model.gw_decoders['attr'] = original_attr_decoder
+                
                 loss_details.update(cycle_details)
                 
                 weighted_cycle_loss = loss_weights['cycle'] * cycle_loss
@@ -330,12 +401,16 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                     total_loss = total_loss + weighted_cycle_loss
             
             # 3. Translation Loss (cross-modal supervised learning on paired data)
+            # Only operates on base features - synergy features are masked out
             if loss_weights.get('translation', 0.0) > 0:
                 from losses_and_weights_GLW_training import calculate_translation_loss, detect_paired_samples
                 # Detect paired samples for translation loss
-                paired_mask = detect_paired_samples(padded_batch, synergy_targets=synergy_targets)
-                # CRITICAL: Pass synergy_config to MASK OUT synergistic features - translation only learns non-synergistic features
-                translation_loss, translation_details = calculate_translation_loss(model, padded_batch, criterion, synergy_targets=synergy_targets, paired_mask=paired_mask, synergy_config=synergy_config)
+                paired_mask = detect_paired_samples(batch, synergy_targets=synergy_targets)
+                # Use existing translation loss - it already handles synergy_config masking
+                translation_loss, translation_details = calculate_translation_loss(
+                    model, batch, criterion, synergy_targets=synergy_targets, 
+                    paired_mask=paired_mask, synergy_config=synergy_config
+                )
                 loss_details.update(translation_details)
                 
                 weighted_translation_loss = loss_weights['translation'] * translation_loss
