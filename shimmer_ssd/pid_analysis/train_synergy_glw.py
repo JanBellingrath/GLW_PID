@@ -29,10 +29,7 @@ from typing import Dict, List, Optional, Tuple, Any
 from collections import defaultdict
 import numpy as np
 
-# Limit GPU memory usage to 10GB on 40GB GPU
-if torch.cuda.is_available():
-    torch.cuda.set_per_process_memory_fraction(0.25)  # 10GB / 40GB = 0.25
-    print(f"🔒 GPU memory limited to 10GB (25% of 40GB GPU)")
+# GPU memory limiting will be handled after argument parsing
 
 # Add path setup for imports
 script_dir = Path(__file__).parent
@@ -85,6 +82,10 @@ class SynergyExperimentConfig:
         
         # Synergy configuration
         self.synergy_config = config_dict['synergy']
+        
+        # Add synergy loss scale if not present
+        if 'loss_scale' not in self.synergy_config:
+            self.synergy_config['loss_scale'] = 1.0
         
         # Training configuration
         self.training = config_dict['training']
@@ -190,8 +191,8 @@ class SynergyTrainer:
             
             # Special handling for domains that bypass domain modules
             if domain_name == 'attr':
-                input_dim = 12  # Enlarged to 12D to match decoder output for cycle compatibility
-                logger.info(f"Attribute domain: bypassing domain module, using 12D input (11D + 1D padding) for cycle compatibility")
+                input_dim = 11  # Input attributes are 11D (preprocessed, NO synergy features)
+                logger.info(f"Attribute domain: bypassing domain module, using 11D input (preprocessed attributes without synergy)")
             elif domain_name == 'v':
                 input_dim = 12  # VAE latents are 12D
                 logger.info(f"Visual domain: bypassing domain module, using 12D VAE latents directly")
@@ -222,13 +223,17 @@ class SynergyTrainer:
                 n_layers=self.config.n_layers,
             )
             
-            # Create decoder with expanded output dimension
-            gw_decoders[domain_name] = GWDecoder(
+            # Create decoder with expanded output dimension (no global activation)
+            decoder = GWDecoder(
                 in_dim=self.config.workspace_dim,
                 hidden_dim=self.config.hidden_dim,
                 out_dim=output_dim,  # Expanded to include synergy features
                 n_layers=self.config.n_layers,
             )
+            
+            # Use decoder directly without global sigmoid activation
+            # This allows outputs to match the full range of target values
+            gw_decoders[domain_name] = decoder
         
         # Create fusion weights
         fusion_weights = self.config.fusion_weights.copy()
@@ -300,6 +305,10 @@ class SynergyTrainer:
         
         for split, dataloader in self.dataloaders.items():
             logger.info(f"{split}: {len(dataloader.dataset)} samples, {len(dataloader)} batches")
+        
+        # Check if we have the required train dataloader
+        if 'train' not in self.dataloaders:
+            raise RuntimeError("Failed to create train dataloader. Check the data directory and file paths.")
     
     def create_synergy_dataloader_wrapper(self, split: str):
         """Create a wrapper that converts synergy batches to standard format."""
@@ -483,7 +492,8 @@ def create_default_config() -> Dict[str, Any]:
             "domains": ["attr", "v"],
             "feature_indices": {
                 "attr": ["xor_target_normalized"]
-            }
+            },
+            "loss_scale": 1.0
         },
         "training": {
             "epochs": 50,
@@ -539,8 +549,14 @@ Example usage:
   # Generate default config file
   python train_synergy_glw.py --generate-config default_config.json
   
-  # Run single experiment
+  # Run single experiment with custom settings
   python train_synergy_glw.py --config config.json --experiment-name fusion_only
+  
+  # Run with custom batch size and GPU memory limit
+  python train_synergy_glw.py --config config.json --batch-size 64 --gpu-memory-percent 50.0
+  
+  # Run with synergy loss scaling and memory control
+  python train_synergy_glw.py --config config.json --synergy-loss-scale 20.0 --gpu-memory-percent 75.0
         """
     )
     
@@ -550,6 +566,9 @@ Example usage:
     parser.add_argument("--device", type=str, help="Device to use (cuda/cpu)")
     parser.add_argument("--output-dir", type=str, help="Override output directory")
     parser.add_argument("--no-wandb", action="store_true", help="Disable wandb logging")
+    parser.add_argument("--synergy-loss-scale", type=float, default=1.0, help="Scale factor for synergy feature loss contribution (default: 1.0)")
+    parser.add_argument("--batch-size", type=int, help="Override batch size from config")
+    parser.add_argument("--gpu-memory-percent", type=float, default=25.0, help="GPU memory usage limit as percentage of total GPU memory (default: 25.0 for 10GB/40GB)")
     
     args = parser.parse_args()
     
@@ -566,6 +585,13 @@ Example usage:
         print("Error: --config is required (or use --generate-config)")
         return
     
+    # Set GPU memory limit based on CLI argument
+    if torch.cuda.is_available():
+        memory_fraction = args.gpu_memory_percent / 100.0
+        torch.cuda.set_per_process_memory_fraction(memory_fraction)
+        memory_gb = 40.0 * memory_fraction  # Assuming A100 40GB
+        print(f"🔒 GPU memory limited to {memory_gb:.1f}GB ({args.gpu_memory_percent}% of 40GB GPU)")
+    
     config = SynergyExperimentConfig.from_file(args.config)
     
     # Override config with command line arguments
@@ -573,6 +599,12 @@ Example usage:
         config.output_dir = args.output_dir
     if args.no_wandb:
         config.experiment['log_to_wandb'] = False
+    if args.synergy_loss_scale:
+        config.synergy_config['loss_scale'] = args.synergy_loss_scale
+        logger.info(f"Override synergy loss scale: {args.synergy_loss_scale}")
+    if args.batch_size:
+        config.batch_size = args.batch_size
+        logger.info(f"Override batch size: {args.batch_size}")
     
     # Set device
     device = None
