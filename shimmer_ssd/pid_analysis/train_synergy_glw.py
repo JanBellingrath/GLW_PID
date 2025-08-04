@@ -77,7 +77,7 @@ class SynergyExperimentConfig:
         self.domain_configs = config_dict['model']['domains']
         self.workspace_dim = config_dict['model'].get('workspace_dim', 12)
         self.hidden_dim = config_dict['model'].get('hidden_dim', 32)
-        self.n_layers = config_dict['model'].get('n_layers', 3)
+        self.n_layers = config_dict['model'].get('n_layers', 4)
         self.fusion_weights = config_dict['model'].get('fusion_weights', {'v': 0.5, 'attr': 0.5})
         
         # Synergy configuration
@@ -484,7 +484,7 @@ def create_default_config() -> Dict[str, Any]:
             ],
             "workspace_dim": 12,
             "hidden_dim": 32,
-            "n_layers": 3,
+            "n_layers": 4,
             "fusion_weights": {
                 "v": 0.5,
                 "attr": 0.5

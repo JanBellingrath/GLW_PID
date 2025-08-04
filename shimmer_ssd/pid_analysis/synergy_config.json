@@ -19,8 +19,8 @@
       }
     ],
     "workspace_dim": 12,
-    "hidden_dim": 16,
-    "n_layers": 2,
+    "hidden_dim": 32,
+    "n_layers": 4,
     "fusion_weights": {
       "v": 0.5,
       "attr": 0.5

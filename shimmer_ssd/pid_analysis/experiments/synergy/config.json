@@ -1,9 +1,9 @@
 {
   "data": {
     "dir": "../../../simple_shapes_xor_targets",
-    "image_dir": "../../../simple_shapes_dataset/simple_shapes_dataset",
-    "batch_size": 32,
-    "num_workers": 4
+    "image_dir": "/home/janerik/shimmer-ssd/simple_shapes_dataset",
+    "batch_size": 1024,
+    "num_workers": 0
   },
   "model": {
     "domains": [
@@ -20,7 +20,7 @@
     ],
     "workspace_dim": 12,
     "hidden_dim": 32,
-    "n_layers": 3,
+    "n_layers": 4,
     "fusion_weights": {
       "v": 0.5,
       "attr": 0.5
@@ -28,13 +28,15 @@
   },
   "synergy": {
     "domains": [
+      "v",
       "attr"
     ],
     "feature_indices": {
       "attr": [
-        0
+        11
       ]
-    }
+    },
+    "loss_scale": 2000.0
   },
   "training": {
     "epochs": 50,
@@ -55,7 +57,8 @@
         "weights": {
           "fusion": 1.0,
           "demi_cycle": 0.0,
-          "cycle": 0.0
+          "cycle": 0.0,
+          "translation": 0.0
         }
       },
       {
@@ -64,7 +67,8 @@
         "weights": {
           "fusion": 0.0,
           "demi_cycle": 1.0,
-          "cycle": 0.0
+          "cycle": 0.0,
+          "translation": 0.0
         }
       },
       {
@@ -73,16 +77,38 @@
         "weights": {
           "fusion": 0.0,
           "demi_cycle": 0.0,
-          "cycle": 1.0
+          "cycle": 1.0,
+          "translation": 0.0
+        }
+      },
+      {
+        "name": "translation_only",
+        "description": "Test cross-modal supervised translation learning",
+        "weights": {
+          "fusion": 0.0,
+          "demi_cycle": 0.0,
+          "cycle": 0.0,
+          "translation": 1.0
+        }
+      },
+      {
+        "name": "fusion_translation",
+        "description": "Combine fusion and translation losses",
+        "weights": {
+          "fusion": 0.5,
+          "demi_cycle": 0.0,
+          "cycle": 0.0,
+          "translation": 0.5
         }
       },
       {
         "name": "all_losses",
-        "description": "Combined training with all loss types",
+        "description": "Combined training with all loss types including translation",
         "weights": {
-          "fusion": 0.4,
-          "demi_cycle": 0.3,
-          "cycle": 0.3
+          "fusion": 0.3,
+          "demi_cycle": 0.2,
+          "cycle": 0.2,
+          "translation": 0.3
         }
       }
     ]
