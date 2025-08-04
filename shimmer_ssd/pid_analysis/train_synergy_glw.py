@@ -210,10 +210,12 @@ class SynergyTrainer:
             output_dim = base_dim
             if (domain_name in self.config.synergy_config.get('feature_indices', {}) and 
                 self.config.synergy_config['feature_indices'][domain_name]):
-                # Add synergy feature dimensions
+                # Add synergy feature dimensions as logits (8 classes per synergy feature)
                 synergy_features = len(self.config.synergy_config['feature_indices'][domain_name])
-                output_dim += synergy_features
-                logger.info(f"Expanding {domain_name} decoder output: {base_dim} -> {output_dim} (+{synergy_features} synergy)")
+                n_synergy_classes = 8  # XOR has 8 discrete classes
+                synergy_logit_dims = synergy_features * n_synergy_classes
+                output_dim += synergy_logit_dims
+                logger.info(f"Expanding {domain_name} decoder output: {base_dim} -> {output_dim} (+{synergy_features} synergy features × {n_synergy_classes} classes = +{synergy_logit_dims} logits)")
             
             # Create encoder with appropriate input dimension
             gw_encoders[domain_name] = GWEncoder(

@@ -53,65 +53,49 @@ def convert_synergy_targets_to_classes(synergy_targets: torch.Tensor, n_bins: in
 
 
 def calculate_synergy_loss_with_crossentropy(
-    synergy_recon: torch.Tensor, 
+    synergy_logits: torch.Tensor, 
     synergy_target: torch.Tensor,
     n_bins: int = 8
 ) -> torch.Tensor:
     """
-    Calculate synergy loss using a classification-appropriate loss for discrete categories.
+    Calculate synergy loss using direct classification with cross-entropy.
     
-    Since the model outputs single values, we use a "soft target" approach:
-    - Convert target to class indices
-    - Apply cross-entropy using the distance between prediction and target bins
+    Direct classification approach:
+    p_i = softmax(W*h + b)  # synergy_logits are already W*h + b
+    L = -∑ log(p_{i,t_i})   # standard cross-entropy
     
     Args:
-        synergy_recon: Model output for synergy features (single values) [..., 1] or [...]
-        synergy_target: Target synergy values (normalized) [..., 1] or [...]
-        n_bins: Number of discrete synergy bins
+        synergy_logits: Model logits for synergy features [..., n_bins] or [..., n_features*n_bins]
+        synergy_target: Target synergy values (normalized) [..., n_features]
+        n_bins: Number of discrete synergy bins (default: 8)
         
     Returns:
-        Classification loss for synergy features
+        Cross-entropy classification loss for synergy features
     """
     # Handle empty tensors
-    if synergy_recon.numel() == 0 or synergy_target.numel() == 0:
-        return torch.tensor(0.0, device=synergy_recon.device, requires_grad=True)
-    
-    # Flatten to 1D for processing while preserving gradients
-    # Handle both [..., 1] and [...] shapes
-    if synergy_target.shape[-1] == 1:
-        target_flat = synergy_target.squeeze(-1)
-    else:
-        target_flat = synergy_target
-        
-    if synergy_recon.shape[-1] == 1:
-        recon_flat = synergy_recon.squeeze(-1)
-    else:
-        recon_flat = synergy_recon
-    
-    # Ensure same batch dimension
-    if target_flat.shape != recon_flat.shape:
-        raise ValueError(f"Shape mismatch: synergy_recon {recon_flat.shape} vs synergy_target {target_flat.shape}")
-    
-    # Flatten to 1D for cross-entropy (which expects [N] for targets and [N, C] for inputs)
-    target_1d = target_flat.flatten()
-    recon_1d = recon_flat.flatten()
+    if synergy_logits.numel() == 0 or synergy_target.numel() == 0:
+        return torch.tensor(0.0, device=synergy_logits.device, requires_grad=True)
     
     # Convert normalized targets to class indices
-    target_classes = convert_synergy_targets_to_classes(target_1d, n_bins)
+    # synergy_target should be shape [..., n_features] with values in [0,1]
+    target_flat = synergy_target.view(-1)  # Flatten all dimensions
+    target_classes = convert_synergy_targets_to_classes(target_flat, n_bins)
     
-    # Create soft targets: use softmax over distances to each bin center
-    bin_centers = torch.linspace(0, 1, n_bins, device=recon_1d.device)  # [0, 1/7, 2/7, ..., 1]
+    # Reshape logits for cross-entropy
+    # synergy_logits should be [..., n_features*n_bins]
+    batch_dims = synergy_logits.shape[:-1]  # All dimensions except last
+    n_features = synergy_target.shape[-1]
     
-    # Calculate distances from output to each bin center
-    distances = torch.abs(recon_1d.unsqueeze(-1) - bin_centers.unsqueeze(0))  # [N, n_bins]
+    # Reshape logits to [batch_size*n_features, n_bins]
+    logits_reshaped = synergy_logits.view(-1, n_bins)
     
-    # Convert distances to probabilities (closer bins get higher probability)
-    # Use negative distances with temperature scaling for softmax
-    temperature = 0.1  # Small temperature for sharper distributions
-    logits = -distances / temperature  # [N, n_bins]
+    # Ensure we have the right number of targets
+    if target_classes.shape[0] != logits_reshaped.shape[0]:
+        raise ValueError(f"Mismatch: {target_classes.shape[0]} targets vs {logits_reshaped.shape[0]} logit groups")
     
-    # Use cross-entropy loss
-    ce_loss = F.cross_entropy(logits, target_classes)
+    # Apply standard cross-entropy loss
+    # F.cross_entropy expects: input=[N, C], target=[N] with class indices
+    ce_loss = F.cross_entropy(logits_reshaped, target_classes)
     
     return ce_loss
 
@@ -123,7 +107,9 @@ def extract_synergy_features(
     tensor: torch.Tensor, 
     domain: str,
     synergy_config: Dict[str, Any],
-    feature_names: Optional[List[str]] = None
+    feature_names: Optional[List[str]] = None,
+    is_model_output: bool = True,
+    n_synergy_classes: int = 8
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Extract synergistic and non-synergistic features from tensor.
@@ -133,6 +119,8 @@ def extract_synergy_features(
         domain: Domain name
         synergy_config: Synergy configuration
         feature_names: Optional feature names for string resolution
+        is_model_output: True for model outputs (with logits), False for targets (with single values)
+        n_synergy_classes: Number of classes per synergy feature (default: 8)
         
     Returns:
         Tuple of (synergy_features, non_synergy_features)
@@ -144,37 +132,66 @@ def extract_synergy_features(
         return torch.empty(tensor.shape[:-1] + (0,), device=tensor.device), tensor
     
     synergy_specs = feature_indices[domain]
-    synergy_idx = []
+    n_synergy_features = len(synergy_specs)
     
-    for spec in synergy_specs:
-        if isinstance(spec, int):
-            synergy_idx.append(spec)
-        elif isinstance(spec, str) and feature_names:
-            if spec in feature_names:
-                synergy_idx.append(feature_names.index(spec))
-            else:
-                logger.warning(f"Feature name '{spec}' not found in {feature_names}")
-        else:
-            logger.warning(f"Could not resolve feature spec: {spec}")
-    
-    if not synergy_idx:
-        # No valid synergy features found
+    if n_synergy_features == 0:
         return torch.empty(tensor.shape[:-1] + (0,), device=tensor.device), tensor
     
-    # Extract synergy features
-    synergy_features = tensor[..., synergy_idx]
-    
-    # Extract non-synergy features (all others)
-    total_features = tensor.shape[-1]
-    non_synergy_idx = [i for i in range(total_features) if i not in synergy_idx]
-    
-    if not non_synergy_idx:
-        # All features are synergistic
-        non_synergy_features = torch.empty(tensor.shape[:-1] + (0,), device=tensor.device)
+    # Determine base dimensions based on domain
+    if domain == 'attr':
+        base_dims = 11
     else:
-        non_synergy_features = tensor[..., non_synergy_idx]
+        # For other domains, use domain module latent_dim (you'd need to pass this)
+        # For now, assume it's passed or use a default
+        base_dims = tensor.shape[-1] - n_synergy_features  # fallback
+    
+    # Extract base features (always first base_dims)
+    non_synergy_features = tensor[..., :base_dims]
+    
+    if is_model_output:
+        # Model outputs: synergy features are logits (n_synergy_features × n_synergy_classes)
+        synergy_logit_dims = n_synergy_features * n_synergy_classes
+        synergy_features = tensor[..., base_dims:base_dims + synergy_logit_dims]
+    else:
+        # Targets: synergy features are single values (n_synergy_features × 1)
+        synergy_features = tensor[..., base_dims:base_dims + n_synergy_features]
     
     return synergy_features, non_synergy_features
+
+
+def extract_base_features_only(
+    tensor: torch.Tensor,
+    domain: str,
+    synergy_config: Dict[str, Any]
+) -> torch.Tensor:
+    """
+    Extract only the base (non-synergy) features from tensor.
+    Used for demi-cycle, cycle, and translation losses which ignore synergy features completely.
+    
+    Args:
+        tensor: Input tensor (..., feature_dim) 
+        domain: Domain name
+        synergy_config: Synergy configuration
+        
+    Returns:
+        Base features tensor with synergy dimensions removed
+    """
+    # Determine base dimensions based on domain
+    if domain == 'attr':
+        base_dims = 11
+    else:
+        # For other domains, if they have synergy features, subtract them
+        feature_indices = synergy_config.get('feature_indices', {})
+        if domain in feature_indices:
+            n_synergy_features = len(feature_indices[domain])
+            # For model outputs, synergy takes n_features * 8 dims
+            # For targets, synergy takes n_features dims
+            # We'll assume the smaller case for safety and let the loss handle dimension checks
+            base_dims = tensor.shape[-1] - n_synergy_features
+        else:
+            base_dims = tensor.shape[-1]  # No synergy features
+    
+    return tensor[..., :base_dims]
 
 
 def add_synergy_metrics_to_loss_details(
@@ -207,10 +224,10 @@ def add_synergy_metrics_to_loss_details(
         
         # Extract synergy-specific components
         synergy_target, non_synergy_target = extract_synergy_features(
-            target, domain_name, synergy_config
+            target, domain_name, synergy_config, is_model_output=False
         )
         synergy_recon, non_synergy_recon = extract_synergy_features(
-            reconstruction, domain_name, synergy_config
+            reconstruction, domain_name, synergy_config, is_model_output=True
         )
         
         # Calculate synergy-specific loss using classification-appropriate loss
@@ -225,21 +242,37 @@ def add_synergy_metrics_to_loss_details(
                 if synergy_target.shape[-1] > 1:
                     for i in range(synergy_target.shape[-1]):
                         try:
+                            # Extract logits for feature i (8 consecutive dimensions)
+                            start_idx = i * 8
+                            end_idx = (i + 1) * 8
+                            feat_logits = synergy_recon[..., start_idx:end_idx]
+                            feat_target = synergy_target[..., i:i+1]
+                            
                             feat_loss = calculate_synergy_loss_with_crossentropy(
-                                synergy_recon[..., i:i+1], synergy_target[..., i:i+1], n_bins=8
+                                feat_logits, feat_target, n_bins=8
                             )
                             loss_details[f"{loss_prefix}_{domain_name}_synergy_feat_{i}_loss"] = feat_loss.item()
                         except Exception as e:
                             logger.warning(f"Cross-entropy failed for synergy feature {i}, using MSE: {e}")
-                            feat_loss = criterion(
-                                synergy_recon[..., i:i+1], 
-                                synergy_target[..., i:i+1]
-                            )
+                            # Fallback with proper reshaping
+                            start_idx = i * 8
+                            end_idx = (i + 1) * 8
+                            feat_logits = synergy_recon[..., start_idx:end_idx]
+                            feat_target = synergy_target[..., i:i+1]
+                            
+                            feat_logits_fallback = torch.softmax(feat_logits, dim=-1).mean(dim=-1, keepdim=True)
+                            feat_loss = criterion(feat_logits_fallback, feat_target)
                             loss_details[f"{loss_prefix}_{domain_name}_synergy_feat_{i}_loss"] = feat_loss.item()
                             
             except Exception as e:
                 logger.warning(f"Cross-entropy loss failed for synergy features in metrics, falling back to MSE: {e}")
-                synergy_loss = criterion(synergy_recon, synergy_target)
+                # Fallback for overall synergy loss
+                if synergy_recon.shape[-1] % 8 == 0:
+                    synergy_recon_fallback = torch.softmax(synergy_recon.view(*synergy_recon.shape[:-1], -1, 8), dim=-1)
+                    synergy_recon_fallback = synergy_recon_fallback.mean(dim=-1)
+                else:
+                    synergy_recon_fallback = synergy_recon
+                synergy_loss = criterion(synergy_recon_fallback, synergy_target)
                 loss_details[f"{loss_prefix}_{domain_name}_synergy_loss"] = synergy_loss.item()
         
         # Calculate non-synergy loss
@@ -367,10 +400,10 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                         if domain_name in decoded:
                             # Extract synergy and non-synergy components for scaled loss
                             synergy_target, non_synergy_target = extract_synergy_features(
-                                target, domain_name, synergy_config
+                                target, domain_name, synergy_config, is_model_output=False
                             )
                             synergy_recon, non_synergy_recon = extract_synergy_features(
-                                decoded[domain_name], domain_name, synergy_config
+                                decoded[domain_name], domain_name, synergy_config, is_model_output=True
                             )
                             
                             # Calculate separate losses
@@ -388,8 +421,13 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                                     )
                                 except Exception as e:
                                     logger.warning(f"Cross-entropy loss failed for synergy features, falling back to MSE: {e}")
-                                    # Fallback to MSE if cross-entropy fails
-                                    synergy_loss = criterion(synergy_recon, synergy_target)
+                                    # Fallback to MSE if cross-entropy fails - reshape synergy logits to single values
+                                    # Take mean across logit dimensions as fallback
+                                    if synergy_recon.shape[-1] == 8:
+                                        synergy_recon_fallback = torch.softmax(synergy_recon, dim=-1).mean(dim=-1, keepdim=True)
+                                    else:
+                                        synergy_recon_fallback = synergy_recon
+                                    synergy_loss = criterion(synergy_recon_fallback, synergy_target)
                                 
                                 # Apply scaling to synergy component
                                 scaled_synergy_loss = synergy_loss_scale * synergy_loss
@@ -440,15 +478,8 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                         
                         def forward(self, x):
                             full_output = self.original_decoder(x)
-                            # Calculate base feature count from synergy config
-                            feature_indices = self.synergy_config.get('feature_indices', {})
-                            if 'attr' in feature_indices:
-                                # Total features minus synergy features = base features
-                                synergy_count = len(feature_indices['attr'])
-                                base_count = full_output.shape[-1] - synergy_count
-                            else:
-                                base_count = 11  # Default for attr domain
-                            return full_output[..., :base_count]
+                            # Extract only base features for cycle/demi-cycle losses
+                            return extract_base_features_only(full_output, 'attr', self.synergy_config)
                     
                     model.gw_decoders['attr'] = AttrBaseDecoderWrapper(original_attr_decoder, synergy_config)
                 
