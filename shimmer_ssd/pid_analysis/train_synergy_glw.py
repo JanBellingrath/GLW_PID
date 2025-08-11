@@ -77,6 +77,8 @@ class SynergyExperimentConfig:
         self.domain_configs = config_dict['model']['domains']
         self.workspace_dim = config_dict['model'].get('workspace_dim', 12)
         self.hidden_dim = config_dict['model'].get('hidden_dim', 32)
+        # Allow separate decoder hidden width; fallback to encoder hidden_dim
+        self.decoder_hidden_dim = config_dict['model'].get('decoder_hidden_dim', self.hidden_dim)
         self.n_layers = config_dict['model'].get('n_layers', 4)
         self.fusion_weights = config_dict['model'].get('fusion_weights', {'v': 0.5, 'attr': 0.5})
         
@@ -140,6 +142,7 @@ class SynergyExperimentConfig:
                 'domains': self.domain_configs,
                 'workspace_dim': self.workspace_dim,
                 'hidden_dim': self.hidden_dim,
+                'decoder_hidden_dim': self.decoder_hidden_dim,
                 'n_layers': self.n_layers,
                 'fusion_weights': self.fusion_weights
             },
@@ -219,7 +222,7 @@ class SynergyTrainer:
             
             # Create encoder with appropriate input dimension
             gw_encoders[domain_name] = GWEncoder(
-                in_dim=input_dim,  # 11D for attr, latent_dim for others
+                in_dim=input_dim,
                 hidden_dim=self.config.hidden_dim,
                 out_dim=self.config.workspace_dim,
                 n_layers=self.config.n_layers,
@@ -228,8 +231,8 @@ class SynergyTrainer:
             # Create decoder with expanded output dimension (no global activation)
             decoder = GWDecoder(
                 in_dim=self.config.workspace_dim,
-                hidden_dim=self.config.hidden_dim,
-                out_dim=output_dim,  # Expanded to include synergy features
+                hidden_dim=self.config.decoder_hidden_dim,
+                out_dim=output_dim,
                 n_layers=self.config.n_layers,
             )
             
@@ -483,7 +486,7 @@ def create_default_config() -> Dict[str, Any]:
                 }
             ],
             "workspace_dim": 12,
-            "hidden_dim": 32,
+            "hidden_dim": 128,
             "n_layers": 4,
             "fusion_weights": {
                 "v": 0.5,
@@ -571,6 +574,8 @@ Example usage:
     parser.add_argument("--synergy-loss-scale", type=float, default=1.0, help="Scale factor for synergy feature loss contribution (default: 1.0)")
     parser.add_argument("--batch-size", type=int, help="Override batch size from config")
     parser.add_argument("--gpu-memory-percent", type=float, default=25.0, help="GPU memory usage limit as percentage of total GPU memory (default: 25.0 for 10GB/40GB)")
+    parser.add_argument("--workspace-dim", type=int, default=None, help="Override workspace dimension (GLW latent)")
+    parser.add_argument("--decoder-hidden-dim", type=int, default=None, help="Override decoder hidden width")
     
     args = parser.parse_args()
     
@@ -601,6 +606,12 @@ Example usage:
         config.output_dir = args.output_dir
     if args.no_wandb:
         config.experiment['log_to_wandb'] = False
+    if args.workspace_dim:
+        config.workspace_dim = int(args.workspace_dim)
+        logger.info(f"Override workspace_dim: {config.workspace_dim}")
+    if args.decoder_hidden_dim:
+        config.decoder_hidden_dim = int(args.decoder_hidden_dim)
+        logger.info(f"Override decoder_hidden_dim: {config.decoder_hidden_dim}")
     if args.synergy_loss_scale:
         config.synergy_config['loss_scale'] = args.synergy_loss_scale
         logger.info(f"Override synergy loss scale: {args.synergy_loss_scale}")

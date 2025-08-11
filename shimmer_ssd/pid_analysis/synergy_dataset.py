@@ -587,30 +587,39 @@ def create_synergy_dataloaders(
             logger.warning(f"Skipping {split} split - file not found: {split_file}")
             continue
         
-        # Create dataset
-        dataset = SynergyDataset(
-            data_dir=data_dir,
-            split=split,
-            synergy_config=synergy_config,
-            image_dir=image_dir,
-            device=device,
-            **dataset_kwargs
-        )
-        
-        # Create dataloader
-        shuffle = (split == 'train')
-        dataloader = torch.utils.data.DataLoader(
-            dataset,
-            batch_size=batch_size,
-            shuffle=shuffle,
-            num_workers=num_workers,
-            pin_memory=(device is not None and device.type == 'cuda'),
-            drop_last=False,
-            collate_fn=synergy_collate_fn
-        )
-        
-        dataloaders[split] = dataloader
-        logger.info(f"Created {split} dataloader with {len(dataset)} samples")
+        try:
+            # Create dataset
+            dataset = SynergyDataset(
+                data_dir=data_dir,
+                split=split,
+                synergy_config=synergy_config,
+                image_dir=image_dir,
+                device=device,
+                **dataset_kwargs
+            )
+            
+            # Create dataloader
+            shuffle = (split == 'train')
+            dataloader = torch.utils.data.DataLoader(
+                dataset,
+                batch_size=batch_size,
+                shuffle=shuffle,
+                num_workers=num_workers,
+                pin_memory=(device is not None and device.type == 'cuda'),
+                drop_last=False,
+                collate_fn=synergy_collate_fn
+            )
+            
+            dataloaders[split] = dataloader
+            logger.info(f"Created {split} dataloader with {len(dataset)} samples")
+            
+        except Exception as e:
+            logger.error(f"Failed to create {split} dataloader: {e}")
+            logger.error(f"Exception type: {type(e).__name__}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            # Continue to next split instead of failing completely
+            continue
     
     return dataloaders
 
