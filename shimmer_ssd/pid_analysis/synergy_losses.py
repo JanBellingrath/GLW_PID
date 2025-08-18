@@ -29,6 +29,10 @@ from losses_and_weights_GLW_training import (
 
 logger = logging.getLogger(__name__)
 
+# Debug logging controls to reduce noise
+_DEBUG_MAX_CALLS = 2
+_debug_state = {'synergy_loss_calls': 0}
+
 
 def convert_synergy_targets_to_classes(synergy_targets: torch.Tensor, n_bins: int = 8) -> torch.Tensor:
     """
@@ -315,6 +319,34 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
             else:
                 # Keep non-target keys for standard processing
                 clean_batch[key] = value
+
+        # Optional debug: log input/target keys and tensor shapes for first few calls
+        _debug_state['synergy_loss_calls'] += 1
+        if _debug_state['synergy_loss_calls'] <= _DEBUG_MAX_CALLS:
+            try:
+                input_keys = list(clean_batch.keys())
+                target_keys = list(synergy_targets.keys())
+                logger.info(
+                    f"[SynergyLoss] call={_debug_state['synergy_loss_calls']} "
+                    f"input_keys={input_keys} target_keys={target_keys} device={device}"
+                )
+                for d, t in clean_batch.items():
+                    if hasattr(t, 'shape'):
+                        logger.info(
+                            f"  input[{d}]: shape={tuple(t.shape)} dtype={getattr(t,'dtype',None)} dev={getattr(t,'device',None)}"
+                        )
+                for d, t in synergy_targets.items():
+                    if hasattr(t, 'shape'):
+                        try:
+                            tmin = t.min().item() if t.numel() else 'NA'
+                            tmax = t.max().item() if t.numel() else 'NA'
+                        except Exception:
+                            tmin, tmax = 'NA', 'NA'
+                        logger.info(
+                            f"  target[{d}]: shape={tuple(t.shape)} dtype={getattr(t,'dtype',None)} dev={getattr(t,'device',None)} min={tmin} max={tmax}"
+                        )
+            except Exception as e:
+                logger.warning(f"[SynergyLoss] debug batch summary failed: {e}")
         
         # Use clean batch without target keys
         batch = clean_batch
@@ -344,6 +376,11 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                     processed_inputs[domain_name] = projector(domain_input)
                 else:
                     processed_inputs[domain_name] = domain_input
+
+            if _debug_state['synergy_loss_calls'] <= _DEBUG_MAX_CALLS:
+                for d, tin in processed_inputs.items():
+                    if hasattr(tin, 'shape'):
+                        logger.info(f"  processed_input[{d}]: shape={tuple(tin.shape)}")
             
             # 1. Fusion Loss with synergy training
             if loss_weights.get('fusion', 0.0) > 0:
@@ -369,6 +406,8 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                 if encoded:
                     # Fuse and decode
                     gw_state = model.fuse(encoded, selection_scores={})
+                    if _debug_state['synergy_loss_calls'] <= _DEBUG_MAX_CALLS and hasattr(gw_state, 'shape'):
+                        logger.info(f"  gw_state: shape={tuple(gw_state.shape)}")
                     decoded = {}
                     for domain_name in synergy_targets.keys():
                         if domain_name in model.gw_decoders:
@@ -395,6 +434,8 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                     fusion_loss = None
                     num_domains = 0
                     synergy_loss_scale = synergy_config.get('loss_scale', 1.0)
+                    if _debug_state['synergy_loss_calls'] <= _DEBUG_MAX_CALLS:
+                        logger.info(f"  synergy_loss_scale={synergy_loss_scale}")
                     
                     for domain_name, target in synergy_targets.items():
                         if domain_name in decoded:
@@ -405,6 +446,20 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                             synergy_recon, non_synergy_recon = extract_synergy_features(
                                 decoded[domain_name], domain_name, synergy_config, is_model_output=True
                             )
+                            if _debug_state['synergy_loss_calls'] <= _DEBUG_MAX_CALLS:
+                                logger.info(
+                                    f"  domain={domain_name} non_synergy_target.shape={tuple(non_synergy_target.shape)} non_synergy_recon.shape={tuple(non_synergy_recon.shape)}"
+                                )
+                                logger.info(
+                                    f"  domain={domain_name} synergy_target.shape={tuple(synergy_target.shape)} synergy_recon.shape={tuple(synergy_recon.shape)}"
+                                )
+                                try:
+                                    if synergy_target.numel() > 0:
+                                        classes = convert_synergy_targets_to_classes(synergy_target.view(-1), n_bins=8)
+                                        bincount = torch.bincount(classes, minlength=8).tolist()
+                                        logger.info(f"    synergy_target class_counts={bincount}")
+                                except Exception as e:
+                                    logger.warning(f"    synergy target stats failed: {e}")
                             
                             # Calculate separate losses
                             domain_loss = 0.0
@@ -434,6 +489,10 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                                 domain_loss += scaled_synergy_loss
                                 loss_details[f"fusion_{domain_name}_synergy_loss"] = synergy_loss.item()
                                 loss_details[f"fusion_{domain_name}_synergy_loss_scaled"] = scaled_synergy_loss.item()
+                                if _debug_state['synergy_loss_calls'] <= _DEBUG_MAX_CALLS:
+                                    logger.info(
+                                        f"    synergy_loss={synergy_loss.item():.6f} scaled={scaled_synergy_loss.item():.6f}"
+                                    )
                             
                             # Convert to tensor if needed
                             if not isinstance(domain_loss, torch.Tensor):
@@ -555,6 +614,8 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
             
         else:
             # Standard training - use original function
+            if _debug_state['synergy_loss_calls'] <= _DEBUG_MAX_CALLS:
+                logger.warning("[SynergyLoss] synergy_targets empty, falling back to standard loss")
             total_loss, loss_details = calculate_losses_with_weights(
                 model, batch, criterion, loss_weights, device
             )

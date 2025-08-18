@@ -12,11 +12,11 @@ from typing import Optional
 # ------------- command-line -----------------------------------------------
 p = argparse.ArgumentParser()
 p.add_argument('--mod',     type=int,   default=8,   help='modulus r')
-p.add_argument('--epochs',  type=int,   default=10000, help='# training epochs per latent size')
+p.add_argument('--epochs',  type=int,   default=1000, help='# training epochs per latent size')
 p.add_argument('--batch',   type=int,   default=256, help='mini-batch size')
 p.add_argument('--opwidth', type=int,   default=64,  help='hidden width in each operand branch')
 p.add_argument('--decwidth',type=int,   default=64,  help='hidden width in decoder')
-p.add_argument('--latent',  type=int,   default=12,  help='latent bottleneck dimensionality (per branch output and decoder input)')
+p.add_argument('--latent',  type=int,   default=10,  help='latent bottleneck dimensionality (per branch output and decoder input)')
 p.add_argument('--latent_list', type=str, default='', help='comma-separated list of latent sizes to sweep; overrides --latent if provided')
 p.add_argument('--lr',      type=float, default=3e-3)
 p.add_argument('--loss_scale', type=float, default=1.0, help='scaling factor for classification loss (higher means stronger modulus addition)')
@@ -175,11 +175,11 @@ def train_and_evaluate(latent_dim: int, loss_scale_value: float):
 
         if epoch==1 or epoch%10==0:
             acc = accuracy(logits_class, y_class)
-            print(
-                f'[latent={latent_dim:3d} ls={loss_scale_value:.4g}] Epoch {epoch:4d} | loss {loss.item():.4f} '
-                f'(cls: {loss_class.item():.4f}, recA: {loss_recon_a.item():.4f}, recB: {loss_recon_b.item():.4f}) '
-                f'| acc {acc*100:5.1f}%'
-            )
+            #print(
+             #   f'[latent={latent_dim:3d} ls={loss_scale_value:.4g}] Epoch {epoch:4d} | loss {loss.item():.4f} '
+            #    f'(cls: {loss_class.item():.4f}, recA: {loss_recon_a.item():.4f}, recB: {loss_recon_b.item():.4f}) '
+            #    f'| acc {acc*100:5.1f}%'
+            #)
 
         # optional mid-epoch eval and logging
         if args.eval_every > 0 and (epoch % args.eval_every == 0):

@@ -197,8 +197,8 @@ class SynergyTrainer:
                 input_dim = 11  # Input attributes are 11D (preprocessed, NO synergy features)
                 logger.info(f"Attribute domain: bypassing domain module, using 11D input (preprocessed attributes without synergy)")
             elif domain_name == 'v':
-                input_dim = 12  # VAE latents are 12D
-                logger.info(f"Visual domain: bypassing domain module, using 12D VAE latents directly")
+                input_dim = 13  # VAE latents (12D) + size value (1D) = 13D
+                logger.info(f"Visual domain: bypassing domain module, using 13D input (12D VAE latents + 1D size)")
             else:
                 input_dim = latent_dim  # Other domains use domain module output
             
@@ -206,6 +206,9 @@ class SynergyTrainer:
             if domain_name == 'attr':
                 # For attributes: base is 11D preprocessed attributes
                 base_dim = 11
+            elif domain_name == 'v':
+                # For visual: base is 13D (12D VAE latents + 1D size)
+                base_dim = 13
             else:
                 # For other domains: use domain module latent_dim
                 base_dim = latent_dim
@@ -324,6 +327,7 @@ class SynergyTrainer:
                 self.loader = loader
                 self.device = device 
                 self.synergy_config = synergy_config
+                self._debug_batches = 0
                 
             def __iter__(self):
                 for batch in self.loader:
@@ -341,6 +345,26 @@ class SynergyTrainer:
                         # Flatten targets with prefix so process_batch can handle them as tensors
                         for domain, data in batch['targets'].items():
                             standard_batch[f'_target_{domain}'] = data
+
+                        # Debug logging for first few batches
+                        if self._debug_batches < 2:
+                            try:
+                                logger.info("[LoaderWrapper] New batch")
+                                in_keys = list(batch['inputs'].keys())
+                                tgt_keys = list(batch['targets'].keys())
+                                logger.info(f"  inputs={in_keys} targets={tgt_keys} device={self.device}")
+                                for d, t in batch['inputs'].items():
+                                    if hasattr(t, 'shape'):
+                                        logger.info(f"  input[{d}]: shape={tuple(t.shape)} dtype={getattr(t,'dtype',None)}")
+                                for d, t in batch['targets'].items():
+                                    if hasattr(t, 'shape'):
+                                        logger.info(f"  target[{d}]: shape={tuple(t.shape)} dtype={getattr(t,'dtype',None)}")
+                                for k, v in standard_batch.items():
+                                    if hasattr(v, 'shape'):
+                                        logger.info(f"  std[{k}]: shape={tuple(v.shape)}")
+                            except Exception as e:
+                                logger.warning(f"[LoaderWrapper] debug log failed: {e}")
+                            self._debug_batches += 1
                     else:
                         # Standard dataset format - pass through
                         standard_batch = batch
@@ -364,6 +388,11 @@ class SynergyTrainer:
         
         logger.info(f"Starting experiment: {experiment_name}")
         logger.info(f"Loss weights: {loss_weights}")
+        logger.info(
+            f"Config summary: workspace_dim={self.config.workspace_dim}, hidden_dim={self.config.hidden_dim}, "
+            f"decoder_hidden_dim={self.config.decoder_hidden_dim}, n_layers={self.config.n_layers}, "
+            f"synergy_loss_scale={self.config.synergy_config.get('loss_scale', 1.0)}, device={self.device}"
+        )
         
         # Create wrapped data loaders that convert synergy format to standard format
         train_loader = self.create_synergy_dataloader_wrapper('train')
@@ -394,7 +423,7 @@ class SynergyTrainer:
                 wandb_project=self.config.wandb_project,
                 wandb_entity=self.config.wandb_entity,
                 short_circuit=False,
-                use_weighted_loss=False,  # We handle weighting in the loss function
+                use_weighted_loss=True,  # Must be True to invoke patched calculate_losses_with_weights
                 loss_weights=loss_weights  # Pass our loss weights directly
             )
         finally:
@@ -573,7 +602,7 @@ Example usage:
     parser.add_argument("--no-wandb", action="store_true", help="Disable wandb logging")
     parser.add_argument("--synergy-loss-scale", type=float, default=1.0, help="Scale factor for synergy feature loss contribution (default: 1.0)")
     parser.add_argument("--batch-size", type=int, help="Override batch size from config")
-    parser.add_argument("--gpu-memory-percent", type=float, default=25.0, help="GPU memory usage limit as percentage of total GPU memory (default: 25.0 for 10GB/40GB)")
+    parser.add_argument("--gpu-memory-percent", type=float, default=100.0, help="GPU memory usage limit as percentage of total GPU memory (default: 25.0 for 10GB/40GB)")
     parser.add_argument("--workspace-dim", type=int, default=None, help="Override workspace dimension (GLW latent)")
     parser.add_argument("--decoder-hidden-dim", type=int, default=None, help="Override decoder hidden width")
     

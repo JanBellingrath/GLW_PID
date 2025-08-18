@@ -145,8 +145,8 @@ class SynergyDataset(Dataset):
         logger.info(f"Loaded {len(self.xor_df)} samples for {self.split} split")
     
     def _load_original_attributes(self):
-        """Load original attribute data (without synergistic features)."""
-        # Try to find original no-size labels
+        """Load original attribute data (without synergistic features) and size values."""
+        # Load no-size attributes
         attr_file = self.data_dir / f"{self.split}_labels_nosize.npy"
         if not attr_file.exists():
             # Try parent directory
@@ -158,10 +158,44 @@ class SynergyDataset(Dataset):
         self.original_attrs = np.load(attr_file)
         logger.info(f"Loaded original attributes: shape {self.original_attrs.shape}")
         
+        # Load original labels with size information
+        # Look for original labels in the dataset directory structure
+        original_labels_paths = [
+            self.data_dir.parent / f"{self.split}_labels.npy",  # Try parent directory first
+            self.data_dir / f"{self.split}_labels.npy",  # Try data directory
+            self.data_dir.parent.parent / "simple_shapes_dataset" / f"{self.split}_labels.npy",  # Try dataset root
+            Path("/home/janerik/GLW_PID/simple_shapes_dataset/simple_shapes_dataset") / f"{self.split}_labels.npy",  # Direct path
+        ]
+        
+        self.original_labels_with_size = None
+        for labels_path in original_labels_paths:
+            if labels_path.exists():
+                try:
+                    self.original_labels_with_size = np.load(labels_path)
+                    logger.info(f"Loaded original labels with size: {labels_path}, shape {self.original_labels_with_size.shape}")
+                    break
+                except Exception as e:
+                    logger.warning(f"Failed to load {labels_path}: {e}")
+                    continue
+        
+        if self.original_labels_with_size is None:
+            raise FileNotFoundError(
+                f"Could not find original labels with size. Searched: {[str(p) for p in original_labels_paths]}"
+            )
+        
+        # Extract size values (column 3 in original labels)
+        self.size_values = self.original_labels_with_size[:, 3].astype(np.float32)
+        logger.info(f"Extracted size values: range [{self.size_values.min():.3f}, {self.size_values.max():.3f}]")
+        
         # Validate sample count matches
         if len(self.original_attrs) != len(self.xor_df):
             raise ValueError(
                 f"Sample count mismatch: attrs={len(self.original_attrs)}, "
+                f"xor={len(self.xor_df)}"
+            )
+        if len(self.size_values) != len(self.xor_df):
+            raise ValueError(
+                f"Sample count mismatch: size_values={len(self.size_values)}, "
                 f"xor={len(self.xor_df)}"
             )
     
@@ -234,8 +268,10 @@ class SynergyDataset(Dataset):
         
         Transformations:
         - Category (1D): 0,1,2 → one-hot encoding (3D)
+        - Coordinates (2D): [7,24] → [0,1] normalization (2D)
         - Rotation (1D): radians → [cos(θ), sin(θ)] (2D) 
-        - Keep others as-is: x, y, r, g, b, uniform_random (6D)
+        - Colors (3D): [0,255] → [0,1] normalization (3D)
+        - Keep uniform_random as-is: [0,1] (1D)
         
         Args:
             raw_attrs: Array of shape [N, 8] with columns:
@@ -243,7 +279,7 @@ class SynergyDataset(Dataset):
                 
         Returns:
             Processed array of shape [N, 11] with columns:
-                [cat_0, cat_1, cat_2, x, y, cos_rot, sin_rot, r, g, b, uniform_random]
+                [cat_0, cat_1, cat_2, x, y, cos_rot, sin_rot, r_norm, g_norm, b_norm, uniform_random]
         """
         N = raw_attrs.shape[0]
         processed = np.zeros((N, 11), dtype=np.float32)
@@ -253,20 +289,22 @@ class SynergyDataset(Dataset):
         for i in range(3):
             processed[:, i] = (categories == i).astype(np.float32)
         
-        # Keep x, y as-is (columns 3-4)
-        processed[:, 3] = raw_attrs[:, 1]  # x
-        processed[:, 4] = raw_attrs[:, 2]  # y
+        # Normalize x, y coordinates from [7,24] to [0,1] (columns 3-4)
+        x_coords = raw_attrs[:, 1]  # x coordinates
+        y_coords = raw_attrs[:, 2]  # y coordinates
+        processed[:, 3] = (x_coords - 7.0) / (24.0 - 7.0)  # x normalized to [0,1]
+        processed[:, 4] = (y_coords - 7.0) / (24.0 - 7.0)  # y normalized to [0,1]
         
         # Convert rotation to cos/sin (columns 5-6)
         rotation = raw_attrs[:, 3]
         processed[:, 5] = np.cos(rotation)  # cos(rotation)
         processed[:, 6] = np.sin(rotation)  # sin(rotation)
         
-        # Keep color and random as-is (columns 7-10)
-        processed[:, 7] = raw_attrs[:, 4]   # r
-        processed[:, 8] = raw_attrs[:, 5]   # g  
-        processed[:, 9] = raw_attrs[:, 6]   # b
-        processed[:, 10] = raw_attrs[:, 7]  # uniform_random
+        # Normalize color values from [0,255] to [0,1] and keep random as-is (columns 7-10)
+        processed[:, 7] = raw_attrs[:, 4] / 255.0   # r (normalized)
+        processed[:, 8] = raw_attrs[:, 5] / 255.0   # g (normalized)
+        processed[:, 9] = raw_attrs[:, 6] / 255.0   # b (normalized)
+        processed[:, 10] = raw_attrs[:, 7]  # uniform_random (already [0,1])
         
         return processed
 
@@ -309,6 +347,10 @@ class SynergyDataset(Dataset):
         
         # Look for VAE latents in the dataset structure
         potential_paths = []
+        
+        # Add direct path to simple shapes dataset saved latents (VAE)
+        simple_shapes_vae_latent = Path("/home/janerik/GLW_PID/simple_shapes_dataset/simple_shapes_dataset/saved_latents") / self.split / latent_filename
+        potential_paths.append(simple_shapes_vae_latent)
         
         if self.image_dir:
             # Check if image_dir contains saved_latents
@@ -369,7 +411,7 @@ class SynergyDataset(Dataset):
         return False
     
     def _prepare_visual_tensors(self) -> torch.Tensor:
-        """Prepare visual tensors from VAE latents or other visual data."""
+        """Prepare visual tensors from VAE latents + size values."""
         if hasattr(self, 'visual_features'):
             visual_tensor = torch.tensor(self.visual_features, dtype=torch.float32, device=self.device)
             
@@ -379,7 +421,30 @@ class SynergyDataset(Dataset):
                 visual_tensor = visual_tensor[:, 0, :]
                 logger.info(f"Extracted VAE mean vectors: {visual_tensor.shape}")
             else:
-                logger.info(f"Prepared visual tensors: {visual_tensor.shape}")
+                logger.info(f"Using visual tensors: {visual_tensor.shape}")
+            
+            # Add actual size values as an additional dimension
+            if hasattr(self, 'size_values'):
+                # Normalize size values to match the range expectation
+                size_min = self.size_values.min()
+                size_max = self.size_values.max()
+                size_range = size_max - size_min
+                
+                if size_range > 0:
+                    normalized_size = (self.size_values - size_min) / size_range
+                else:
+                    normalized_size = np.full_like(self.size_values, 0.5)
+                
+                # Convert to tensor and add as extra dimension
+                size_tensor = torch.tensor(normalized_size, dtype=torch.float32, device=self.device).unsqueeze(1)
+                
+                # Concatenate VAE latents with size values: [N, latent_dim] + [N, 1] = [N, latent_dim+1]
+                visual_tensor = torch.cat([visual_tensor, size_tensor], dim=1)
+                
+                logger.info(f"Added size values to visual tensor: {visual_tensor.shape} (VAE latents + size)")
+                logger.info(f"Size range: [{size_min:.3f}, {size_max:.3f}] → [0, 1]")
+            else:
+                logger.warning("No size values available - using VAE latents only")
             
             return visual_tensor
         else:
