@@ -404,21 +404,35 @@ class MultiRunSweepRunner:
             env['PYTHONPATH'] = str(script_dir) + ':' + env.get('PYTHONPATH', '')
             
             # Run the command
-            logger.debug(f"Executing command: {' '.join(cmd)}")
-            result = subprocess.run(
-                cmd,
-
-                capture_output=True,
-                text=True,
-                timeout=3600,  # 1 hour timeout
-                env=env,
-                cwd=str(script_dir)
-            )
+            logger.info(f"Executing: {' '.join(cmd[-6:])}")  # Show last few args for clarity
+            
+            # Create log file for this specific run
+            log_file = run_output_dir / f"{condition_id}.log"
+            
+            with open(log_file, 'w') as log_f:
+                result = subprocess.run(
+                    cmd,
+                    stdout=log_f,
+                    stderr=subprocess.STDOUT,  # Merge stderr into stdout
+                    text=True,
+                    timeout=3600,  # 1 hour timeout
+                    env=env,
+                    cwd=str(script_dir)
+                )
             
             if result.returncode != 0:
                 logger.error(f"Command failed for {condition_id}")
-                logger.error(f"Stdout: {result.stdout}")
-                logger.error(f"Stderr: {result.stderr}")
+                logger.error(f"Check log file: {log_file}")
+                # Read the last few lines of the log file for quick diagnosis
+                try:
+                    with open(log_file, 'r') as f:
+                        lines = f.readlines()
+                        if lines:
+                            logger.error("Last few lines of log:")
+                            for line in lines[-10:]:  # Show last 10 lines
+                                logger.error(f"  {line.rstrip()}")
+                except Exception as e:
+                    logger.error(f"Could not read log file: {e}")
                 return condition, None
             
             # Parse result from the lowdim_sweep output
@@ -443,10 +457,13 @@ class MultiRunSweepRunner:
                         'synergy_scale': condition.synergy_scale,
                         'run_id': condition.run_id,
                         'seed': condition.seed,
-                        'condition_id': condition_id
+                        'condition_id': condition_id,
+                        'log_file': str(log_file)
                     })
                     
-                    logger.info(f"Successfully completed {condition_id}")
+                    # Extract key metrics for immediate feedback
+                    val_loss = result_data.get('best_val_loss', 'N/A')
+                    logger.info(f"✅ Completed {condition_id} - Val Loss: {val_loss}")
                     return condition, result_data
                 else:
                     logger.error(f"No result found for dimension {condition.workspace_dim} in {results_pattern}")
@@ -488,6 +505,11 @@ class MultiRunSweepRunner:
         self._save_state()
         
         logger.info(f"Completed sweep. Successful: {len(self.state['completed'])}, Failed: {len(self.state['failed'])}")
+        
+        # Show where to find detailed logs
+        if self.state['completed']:
+            logger.info(f"📋 Individual run logs saved in: {self.results_dir}")
+            logger.info(f"💡 To view a specific run log: cat {self.results_dir}/[condition_id]/[condition_id].log")
     
     def _run_sequential(self, conditions: List[ExperimentCondition]):
         """Run conditions sequentially."""
