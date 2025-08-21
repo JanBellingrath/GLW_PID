@@ -360,11 +360,29 @@ class MultiRunSweepRunner:
         logger.info(f"Running condition: {condition_id}")
         
         try:
+            # Set output directory for this specific run
+            run_output_dir = self.results_dir / condition_id
+            run_output_dir.mkdir(exist_ok=True)
+            
+            # Create a temporary config file with modified output directory
+            temp_config_path = run_output_dir / 'temp_config.json'
+            with open(self.config_path, 'r') as f:
+                config_data = json.load(f)
+            
+            # Modify the output directory to be unique for this run
+            if 'experiment' not in config_data:
+                config_data['experiment'] = {}
+            config_data['experiment']['output_dir'] = str(run_output_dir / 'synergy_experiment')
+            
+            # Save temporary config
+            with open(temp_config_path, 'w') as f:
+                json.dump(config_data, f, indent=2)
+            
             # Build command for lowdim_sweep.py
             cmd = [
                 sys.executable, 
                 str(script_dir / 'experiments' / 'lowdim_sweep.py'),
-                '--config', str(self.config_path),
+                '--config', str(temp_config_path),  # Use the temporary config
                 '--dims', str(condition.workspace_dim),
                 '--experiment', self.experiment_type,
                 '--seed', str(condition.seed),
@@ -381,10 +399,6 @@ class MultiRunSweepRunner:
             # Add no-wandb flag to avoid conflicts
             cmd.append('--no-wandb')
             
-            # Set output directory for this specific run
-            run_output_dir = self.results_dir / condition_id
-            run_output_dir.mkdir(exist_ok=True)
-            
             # Set environment variables for the subprocess
             env = os.environ.copy()
             env['PYTHONPATH'] = str(script_dir) + ':' + env.get('PYTHONPATH', '')
@@ -393,6 +407,7 @@ class MultiRunSweepRunner:
             logger.debug(f"Executing command: {' '.join(cmd)}")
             result = subprocess.run(
                 cmd,
+
                 capture_output=True,
                 text=True,
                 timeout=3600,  # 1 hour timeout
@@ -407,8 +422,8 @@ class MultiRunSweepRunner:
                 return condition, None
             
             # Parse result from the lowdim_sweep output
-            # Look for the results JSON file
-            results_pattern = script_dir / "experiments" / "lowdim_sweep_results" / f"sweep_results_{self.experiment_type}.json"
+            # Look for the results JSON file in the run-specific directory
+            results_pattern = run_output_dir / 'synergy_experiment' / 'lowdim_sweep_results' / f"sweep_results_{self.experiment_type}.json"
             
             if results_pattern.exists():
                 with open(results_pattern, 'r') as f:
