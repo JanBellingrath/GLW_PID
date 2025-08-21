@@ -168,8 +168,8 @@ def run_single_dimension(
                 project="synergy-bottleneck-sweep-2025",
                 group="lowdim-synergy-prior",
                 job_type="train",
-                name=f"dim_syn_{workspace_dim}",
-                tags=[f"dim_syn={workspace_dim}", experiment_type],
+                name=f"dim_syn_{workspace_dim}_scale_{config.synergy_config.get('loss_scale', 1.0):.1f}_seed_{seed}",
+                tags=[f"dim_syn={workspace_dim}", f"scale={config.synergy_config.get('loss_scale', 1.0):.1f}", f"seed={seed}", experiment_type],
                 config={
                     'workspace_dim': workspace_dim,
                     'experiment_type': experiment_type,

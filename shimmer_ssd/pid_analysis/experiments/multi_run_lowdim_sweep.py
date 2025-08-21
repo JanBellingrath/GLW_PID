@@ -268,7 +268,8 @@ class MultiRunSweepRunner:
         batch_size: Optional[int] = None,
         device: Optional[str] = None,
         parallel_jobs: int = 1,
-        resume: bool = True
+        resume: bool = True,
+        enable_wandb: bool = True
     ):
         self.config_path = Path(config_path)
         self.output_dir = Path(output_dir)
@@ -281,6 +282,7 @@ class MultiRunSweepRunner:
         self.device = device
         self.parallel_jobs = min(parallel_jobs, mp.cpu_count())
         self.resume = resume
+        self.enable_wandb = enable_wandb
         
         # Initialize components
         self.aggregator = MetricsAggregator()
@@ -304,6 +306,7 @@ class MultiRunSweepRunner:
         logger.info(f"  Total conditions: {len(self.conditions)}")
         logger.info(f"  Output directory: {self.output_dir}")
         logger.info(f"  Parallel jobs: {self.parallel_jobs}")
+        logger.info(f"  W&B logging: {'Enabled' if self.enable_wandb else 'Disabled'}")
     
     def _generate_conditions(self) -> List[ExperimentCondition]:
         """Generate all experimental conditions."""
@@ -396,8 +399,9 @@ class MultiRunSweepRunner:
             if self.device:
                 cmd.extend(['--device', self.device])
             
-            # Add no-wandb flag to avoid conflicts
-            cmd.append('--no-wandb')
+            # Control W&B logging based on enable_wandb setting
+            if not self.enable_wandb:
+                cmd.append('--no-wandb')
             
             # Set environment variables for the subprocess
             env = os.environ.copy()
@@ -995,6 +999,11 @@ Example usage:
         help="Don't resume from previous state"
     )
     parser.add_argument(
+        "--no-wandb",
+        action="store_true",
+        help="Disable W&B logging for individual runs"
+    )
+    parser.add_argument(
         "--analyze-only",
         action="store_true",
         help="Skip running experiments, only analyze existing results"
@@ -1027,7 +1036,8 @@ Example usage:
         batch_size=args.batch_size,
         device=args.device,
         parallel_jobs=args.parallel_jobs,
-        resume=not args.no_resume
+        resume=not args.no_resume,
+        enable_wandb=not args.no_wandb
     )
     
     try:
