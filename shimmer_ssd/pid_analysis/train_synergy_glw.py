@@ -31,13 +31,23 @@ import numpy as np
 
 # GPU memory limiting will be handled after argument parsing
 
-# Add path setup for imports
+# Add path setup for imports - prioritize local directory
 script_dir = Path(__file__).parent
-sys.path.insert(0, str(script_dir))
+sys.path.insert(0, str(script_dir))  # Local directory has highest priority
+
+# Add shimmer module path - look for shimmer-ssd in parent directories
+current_dir = script_dir
+while current_dir != current_dir.parent:
+    shimmer_path = current_dir.parent / 'shimmer-ssd'
+    if shimmer_path.exists():
+        sys.path.insert(0, str(shimmer_path))
+        break
+    current_dir = current_dir.parent
 
 # Import our synergy modules
 from synergy_dataset import SynergyDataset, create_synergy_dataloaders
 from synergy_losses import create_synergy_loss_function, process_synergy_batch
+from metrics.predictability import compute_predictability
 
 # Import from the original training script - reuse existing functions
 from losses_and_weights_GLW_training import (
@@ -88,6 +98,10 @@ class SynergyExperimentConfig:
         # Add synergy loss scale if not present
         if 'loss_scale' not in self.synergy_config:
             self.synergy_config['loss_scale'] = 1.0
+        
+        # Add unique/redundant indices for predictability metrics (optional)
+        self.unique_indices = self.synergy_config.get('unique_indices', {})
+        self.redundant_indices = self.synergy_config.get('redundant_indices', {})
         
         # Training configuration
         self.training = config_dict['training']
@@ -146,7 +160,11 @@ class SynergyExperimentConfig:
                 'n_layers': self.n_layers,
                 'fusion_weights': self.fusion_weights
             },
-            'synergy': self.synergy_config,
+            'synergy': {
+                **self.synergy_config,
+                'unique_indices': self.unique_indices,
+                'redundant_indices': self.redundant_indices
+            },
             'training': self.training,
             'experiment': self.experiment
         }
@@ -194,8 +212,8 @@ class SynergyTrainer:
             
             # Special handling for domains that bypass domain modules
             if domain_name == 'attr':
-                input_dim = 11  # Input attributes are 11D (preprocessed, NO synergy features)
-                logger.info(f"Attribute domain: bypassing domain module, using 11D input (preprocessed attributes without synergy)")
+                input_dim = 11  # Input attributes are 11D (preprocessed)
+                logger.info(f"Attribute domain: bypassing domain module, using 11D input (preprocessed attributes")
             elif domain_name == 'v':
                 input_dim = 13  # VAE latents (12D) + size value (1D) = 13D
                 logger.info(f"Visual domain: bypassing domain module, using 13D input (12D VAE latents + 1D size)")
@@ -205,23 +223,24 @@ class SynergyTrainer:
             # Calculate output dimension based on synergy config
             if domain_name == 'attr':
                 # For attributes: base is 11D preprocessed attributes
-                base_dim = 11
+                base_dim_output = 11
             elif domain_name == 'v':
                 # For visual: base is 13D (12D VAE latents + 1D size)
-                base_dim = 13
+                base_dim_output = 13
             else:
                 # For other domains: use domain module latent_dim
-                base_dim = latent_dim
+                base_dim_output = latent_dim
                 
-            output_dim = base_dim
+            output_dim = base_dim_output 
+
             if (domain_name in self.config.synergy_config.get('feature_indices', {}) and 
-                self.config.synergy_config['feature_indices'][domain_name]):
+                self.config.synergy_config['feature_indices'][domain_name]): #TODO what is feature_indices? does it not exist for both domains?
                 # Add synergy feature dimensions as logits (8 classes per synergy feature)
                 synergy_features = len(self.config.synergy_config['feature_indices'][domain_name])
                 n_synergy_classes = 8  # XOR has 8 discrete classes
-                synergy_logit_dims = synergy_features * n_synergy_classes
+                synergy_logit_dims = synergy_features * n_synergy_classes #TODO WHY? this seems wrong
                 output_dim += synergy_logit_dims
-                logger.info(f"Expanding {domain_name} decoder output: {base_dim} -> {output_dim} (+{synergy_features} synergy features × {n_synergy_classes} classes = +{synergy_logit_dims} logits)")
+                logger.info(f"Expanding {domain_name} decoder output: {base_dim_output} -> {output_dim} (+{synergy_features} synergy features × {n_synergy_classes} classes = +{synergy_logit_dims} logits)")
             
             # Create encoder with appropriate input dimension
             gw_encoders[domain_name] = GWEncoder(
@@ -376,6 +395,124 @@ class SynergyTrainer:
         
         return SynergyDataLoaderWrapper(original_loader, self.device, self.config.synergy_config)
     
+    def evaluate_predictability(self) -> Dict[str, float]:
+        """
+        Evaluate predictability metrics on validation set.
+        
+        Returns:
+            Dictionary of predictability metrics
+        """
+        if 'val' not in self.dataloaders:
+            logger.warning("No validation dataloader available for predictability evaluation")
+            return {}
+            
+        if self.model is None:
+            logger.warning("No model available for predictability evaluation")
+            return {}
+        
+        logger.info("Computing predictability metrics on validation set...")
+        
+        self.model.eval()
+        val_loader = self.create_synergy_dataloader_wrapper('val')
+        
+        # Collect all decoded outputs and targets
+        all_decoded = {}
+        all_targets = {}
+        
+        with torch.no_grad():
+            for batch_idx, batch in enumerate(val_loader):
+                try:
+                    # Process batch to get inputs and targets
+                    batch_inputs = {}
+                    batch_targets = {}
+                    
+                    for key, value in batch.items():
+                        if key.startswith('_target_'):
+                            domain = key.replace('_target_', '')
+                            batch_targets[domain] = value.to(self.device)
+                        else:
+                            batch_inputs[key] = value.to(self.device)
+                    
+                    # Only evaluate domains that have synergy targets
+                    synergy_domains = set(self.config.synergy_config['domains'])
+                    eval_domains = synergy_domains.intersection(batch_targets.keys())
+                    
+                    if not eval_domains:
+                        continue
+                    
+                    # Encode inputs
+                    latents = {}
+                    for domain, data in batch_inputs.items():
+                        if domain in eval_domains:
+                            # Use the same bypassing logic as in training
+                            if domain == 'attr' or domain == 'v':
+                                # Bypass domain module - use preprocessed data directly
+                                latents[domain] = self.model.gw_encoders[domain](data)
+                            else:
+                                # Use domain module if available
+                                domain_latent = self.model.domain_modules[domain].encode(data)
+                                latents[domain] = self.model.gw_encoders[domain](domain_latent)
+                    
+                    if not latents:
+                        continue
+                    
+                    # Fuse latents
+                    fused_latent = self.model.fuse(latents, None)
+                    
+                    # Decode to all target domains
+                    decoded = {}
+                    for domain in eval_domains:
+                        decoded[domain] = self.model.gw_decoders[domain](fused_latent)
+                    
+                    # Accumulate results
+                    for domain in decoded.keys():
+                        if domain not in all_decoded:
+                            all_decoded[domain] = []
+                            all_targets[domain] = []
+                        
+                        all_decoded[domain].append(decoded[domain].cpu())
+                        all_targets[domain].append(batch_targets[domain].cpu())
+                        
+                except Exception as e:
+                    logger.warning(f"Error processing validation batch {batch_idx}: {e}")
+                    continue
+        
+        if not all_decoded:
+            logger.warning("No validation data processed for predictability evaluation")
+            return {}
+        
+        # Concatenate all batches
+        final_decoded = {}
+        final_targets = {}
+        
+        for domain in all_decoded.keys():
+            final_decoded[domain] = torch.cat(all_decoded[domain], dim=0).to(self.device)
+            final_targets[domain] = torch.cat(all_targets[domain], dim=0).to(self.device)
+        
+        # Prepare partitions from config
+        partitions = {}
+        for domain in final_decoded.keys():
+            partitions[domain] = {
+                'unique': self.config.unique_indices.get(domain, []),
+                'redundant': self.config.redundant_indices.get(domain, [])
+            }
+        
+        # Compute predictability metrics
+        metrics = compute_predictability(
+            decoded=final_decoded,
+            targets=final_targets,
+            partitions=partitions,
+            synergy_config=self.config.synergy_config,
+            device=self.device,
+            n_bins=8
+        )
+        
+        logger.info("Predictability metrics computed:")
+        for key, value in metrics.items():
+            logger.info(f"  {key}: {value:.4f}")
+        
+        return metrics
+    
     def run_experiment(
         self,
         loss_config: Dict[str, Any],
@@ -442,6 +579,35 @@ class SynergyTrainer:
                 final_val_loss = float(eval_result) if eval_result is not None else 0.0
         else:
             final_val_loss = 0.0
+        
+        # Evaluate predictability metrics and log to W&B
+        predictability_metrics = self.evaluate_predictability()
+        
+        # Log predictability metrics to W&B if available and enabled
+        if HAS_WANDB and log_to_wandb and predictability_metrics:
+            try:
+                wandb.log(predictability_metrics)
+                logger.info("Predictability metrics logged to W&B")
+            except Exception as e:
+                logger.warning(f"Failed to log predictability metrics to W&B: {e}")
+        
+        # Save predictability summary to file
+        if predictability_metrics:
+            summary_file = Path(self.config.output_dir) / experiment_name / 'predictability_summary.json'
+            summary_file.parent.mkdir(parents=True, exist_ok=True)
+            
+            summary_data = {
+                'experiment_name': experiment_name,
+                'workspace_dim': self.config.workspace_dim,
+                'loss_weights': loss_weights,
+                'synergy_loss_scale': self.config.synergy_config.get('loss_scale', 1.0),
+                'metrics': predictability_metrics
+            }
+            
+            with open(summary_file, 'w') as f:
+                json.dump(summary_data, f, indent=2)
+            
+            logger.info(f"Predictability summary saved to {summary_file}")
         
         # Return experiment results
         results = {
@@ -527,7 +693,15 @@ def create_default_config() -> Dict[str, Any]:
             "feature_indices": {
                 "attr": ["xor_target_normalized"]
             },
-            "loss_scale": 1.0
+            "loss_scale": 1.0,
+            "unique_indices": {
+                "attr": [],  # Example: indices that are unique to attr domain  
+                "v": []      # Example: indices that are unique to v domain
+            },
+            "redundant_indices": {
+                "attr": [],  # Example: indices that are redundant across modalities
+                "v": []      # Example: indices that are redundant across modalities
+            }
         },
         "training": {
             "epochs": 50,

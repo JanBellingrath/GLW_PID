@@ -19,6 +19,17 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Dict, List, Optional, Tuple, Any
 import logging
+import sys
+from pathlib import Path
+
+# Ensure we import from the local losses_and_weights_GLW_training.py
+current_dir = Path(__file__).parent
+# Remove any paths that might have the other losses_and_weights_GLW_training.py
+parent_repo_path = str(current_dir.parent.parent.parent)
+if parent_repo_path in sys.path:
+    sys.path.remove(parent_repo_path)
+# Add local directory with highest priority
+sys.path.insert(0, str(current_dir))
 
 # Import existing loss functions instead of rewriting them
 from losses_and_weights_GLW_training import (
@@ -143,7 +154,9 @@ def extract_synergy_features(
     
     # Determine base dimensions based on domain
     if domain == 'attr':
-        base_dims = 11
+        # For attr domain: base features are the original 11D processed attributes
+        # Input and target both have these 11D features (uniform_random is the synergy source at index 10)
+        base_dims = 11  # Original 11 processed attribute features
     else:
         # For other domains, use domain module latent_dim (you'd need to pass this)
         # For now, assume it's passed or use a default
@@ -155,10 +168,18 @@ def extract_synergy_features(
     if is_model_output:
         # Model outputs: synergy features are logits (n_synergy_features × n_synergy_classes)
         synergy_logit_dims = n_synergy_features * n_synergy_classes
-        synergy_features = tensor[..., base_dims:base_dims + synergy_logit_dims]
+        if domain == 'attr':
+            # For attr: synergy logits start after the 11 base features
+            synergy_features = tensor[..., 11:11 + synergy_logit_dims]
+        else:
+            synergy_features = tensor[..., base_dims:base_dims + synergy_logit_dims]
     else:
         # Targets: synergy features are single values (n_synergy_features × 1)
-        synergy_features = tensor[..., base_dims:base_dims + n_synergy_features]
+        if domain == 'attr':
+            # For attr: synergy targets start after the 11 base features
+            synergy_features = tensor[..., 11:11 + n_synergy_features]
+        else:
+            synergy_features = tensor[..., base_dims:base_dims + n_synergy_features]
     
     return synergy_features, non_synergy_features
 
@@ -182,6 +203,7 @@ def extract_base_features_only(
     """
     # Determine base dimensions based on domain
     if domain == 'attr':
+        # For attr domain: base features are the original 11D processed attributes
         base_dims = 11
     else:
         # For other domains, if they have synergy features, subtract them
@@ -467,6 +489,22 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                                 non_synergy_loss = criterion(non_synergy_recon, non_synergy_target)
                                 domain_loss += non_synergy_loss
                                 loss_details[f"fusion_{domain_name}_non_synergy_loss"] = non_synergy_loss.item()
+                                
+                                # For attr domain: track reconstruction of synergy source feature separately
+                                if domain_name == 'attr':
+                                    # Split into features 0-9 (non-synergy) and feature 10 (uniform_random = synergy source)
+                                    non_synergy_features_only = non_synergy_recon[:, :10]  # features 0-9
+                                    synergy_source_feature = non_synergy_recon[:, 10:11]   # feature 10 (uniform_random)
+                                    
+                                    non_synergy_targets_only = non_synergy_target[:, :10]  # features 0-9
+                                    synergy_source_target = non_synergy_target[:, 10:11]   # feature 10 (uniform_random)
+                                    
+                                    # Calculate MSE for each group
+                                    non_synergy_mse = criterion(non_synergy_features_only, non_synergy_targets_only)
+                                    synergy_source_mse = criterion(synergy_source_feature, synergy_source_target)
+                                    
+                                    loss_details[f"fusion_{domain_name}_non_synergy_features_mse"] = non_synergy_mse.item()
+                                    loss_details[f"fusion_{domain_name}_synergy_source_feature_mse"] = synergy_source_mse.item()
                             
                             if synergy_target.numel() > 0:
                                 # Use classification-appropriate loss for discrete synergy features

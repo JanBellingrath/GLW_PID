@@ -1,0 +1,72 @@
+{
+  "data": {
+    "dir": "data/simple_shapes_xor_targets",
+    "image_dir": null,
+    "batch_size": 32,
+    "num_workers": 4
+  },
+  "model": {
+    "domains": [
+      {
+        "domain_type": "v_latents",
+        "checkpoint_path": "path/to/pretrained_vae.ckpt",
+        "name": "v"
+      },
+      {
+        "domain_type": "attr",
+        "checkpoint_path": "path/to/pretrained_attr.ckpt", 
+        "name": "attr"
+      }
+    ],
+    "workspace_dim": 12,
+    "hidden_dim": 128,
+    "decoder_hidden_dim": 128,
+    "n_layers": 4,
+    "fusion_weights": {
+      "v": 0.5,
+      "attr": 0.5
+    }
+  },
+  "synergy": {
+    "domains": ["attr", "v"],
+    "feature_indices": {
+      "attr": ["xor_target_normalized"]
+    },
+    "loss_scale": 1.0,
+    "unique_indices": {
+      "attr": [0, 1, 2, 3, 4],
+      "v": []
+    },
+    "redundant_indices": {
+      "attr": [5, 6, 7, 8, 9],
+      "v": []
+    }
+  },
+  "training": {
+    "epochs": 50,
+    "optimizer": {
+      "type": "Adam",
+      "lr": 0.001,
+      "weight_decay": 0.0
+    },
+    "grad_clip": 1.0,
+    "reset_model_per_experiment": true,
+    "loss_configs": [
+      {
+        "name": "fusion_only",
+        "weights": {
+          "fusion": 1.0,
+          "demi_cycle": 0.0,
+          "cycle": 0.0,
+          "translation": 0.0
+        }
+      }
+    ]
+  },
+  "experiment": {
+    "output_dir": "experiments/multi_run_synergy",
+    "wandb_project": "synergy-bottleneck-sweep-2025",
+    "wandb_entity": null,
+    "log_to_wandb": false
+  }
+}
