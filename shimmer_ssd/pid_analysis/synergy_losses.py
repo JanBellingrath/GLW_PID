@@ -168,11 +168,15 @@ def extract_synergy_features(
     if is_model_output:
         # Model outputs: synergy features are logits (n_synergy_features × n_synergy_classes)
         synergy_logit_dims = n_synergy_features * n_synergy_classes
-        if domain == 'attr':
-            # For attr: synergy logits start after the 11 base features
-            synergy_features = tensor[..., 11:11 + synergy_logit_dims]
+        # If attr synergy logits are disabled on the decoder, return empty synergy slice
+        if domain == 'attr' and not synergy_config.get('attr_includes_synergy', True):
+            synergy_features = torch.empty(tensor.shape[:-1] + (0,), device=tensor.device)
         else:
-            synergy_features = tensor[..., base_dims:base_dims + synergy_logit_dims]
+            if domain == 'attr':
+                # For attr: synergy logits start after the 11 base features
+                synergy_features = tensor[..., 11:11 + synergy_logit_dims]
+            else:
+                synergy_features = tensor[..., base_dims:base_dims + synergy_logit_dims]
     else:
         # Targets: synergy features are single values (n_synergy_features × 1)
         if domain == 'attr':
@@ -426,8 +430,22 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                                 encoded[domain_name] = model.gw_encoders[domain_name](domain_input)
                 
                 if encoded:
-                    # Fuse and decode
+                    # Fuse
                     gw_state = model.fuse(encoded, selection_scores={})
+                    # Optional post-tanh + noise injection
+                    try:
+                        noise_cfg = synergy_config.get('noise', {})
+                        site = noise_cfg.get('site', 'post_fusion_post_tanh')
+                        if 'post_tanh' in str(site):
+                            gw_state = torch.tanh(gw_state)
+                        std = float(noise_cfg.get('train_std', 0.0) if model.training else noise_cfg.get('eval_std', noise_cfg.get('train_std', 0.0)))
+                        if std and std > 0.0:
+                            gw_state = gw_state + std * torch.randn_like(gw_state)
+                            if _debug_state['synergy_loss_calls'] <= _DEBUG_MAX_CALLS:
+                                logger.info(f"  noise injected at site={site} std={std}")
+                    except Exception as e:
+                        logger.warning(f"Noise injection skipped due to error: {e}")
+                    # Decode
                     if _debug_state['synergy_loss_calls'] <= _DEBUG_MAX_CALLS and hasattr(gw_state, 'shape'):
                         logger.info(f"  gw_state: shape={tuple(gw_state.shape)}")
                     decoded = {}
@@ -450,6 +468,12 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                                     decoded[domain_name] = model.domain_mods[domain_name].decode(decoded_latent)
                                 else:
                                     decoded[domain_name] = decoded_latent
+                    # Optionally decode synergy head
+                    if synergy_config.get('enable_syn_head', False) and 'syn' in getattr(model, 'gw_decoders', {}):
+                        try:
+                            decoded['syn'] = model.gw_decoders['syn'](gw_state)
+                        except Exception as e:
+                            logger.warning(f"Failed to decode 'syn' head: {e}")
                     
                     # Calculate losses against TARGETS (with synergy features) 
                     # Apply synergy loss scaling to give more weight to synergy features
@@ -506,17 +530,19 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                                     loss_details[f"fusion_{domain_name}_non_synergy_features_mse"] = non_synergy_mse.item()
                                     loss_details[f"fusion_{domain_name}_synergy_source_feature_mse"] = synergy_source_mse.item()
                             
-                            if synergy_target.numel() > 0:
+                            # Only compute synergy CE here if this domain outputs synergy logits
+                            if synergy_target.numel() > 0 and synergy_recon.numel() > 0:
                                 # Use classification-appropriate loss for discrete synergy features
                                 try:
+                                    n_bins = int(synergy_config.get('n_bins', 8))
                                     synergy_loss = calculate_synergy_loss_with_crossentropy(
-                                        synergy_recon, synergy_target, n_bins=8
+                                        synergy_recon, synergy_target, n_bins=n_bins
                                     )
                                 except Exception as e:
                                     logger.warning(f"Cross-entropy loss failed for synergy features, falling back to MSE: {e}")
                                     # Fallback to MSE if cross-entropy fails - reshape synergy logits to single values
                                     # Take mean across logit dimensions as fallback
-                                    if synergy_recon.shape[-1] == 8:
+                                    if synergy_recon.shape[-1] == int(synergy_config.get('n_bins', 8)):
                                         synergy_recon_fallback = torch.softmax(synergy_recon, dim=-1).mean(dim=-1, keepdim=True)
                                     else:
                                         synergy_recon_fallback = synergy_recon
@@ -543,6 +569,38 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                             else:
                                 fusion_loss = fusion_loss + domain_loss
                             num_domains += 1
+
+                    # Add external 'syn' head CE loss using attr target as label source
+                    if synergy_config.get('enable_syn_head', False) and 'syn' in decoded and 'attr' in synergy_targets:
+                        try:
+                            syn_logits = decoded['syn']
+                            # Prefer 1-of-K target if available at attr[..., 11:]
+                            attr_target_full = synergy_targets['attr']
+                            n_bins = int(synergy_config.get('n_bins', 8))
+                            if attr_target_full.shape[-1] > 11:
+                                syn_target_raw = attr_target_full[..., 11:]
+                            else:
+                                # Fallback to scalar synergy target via helper
+                                syn_target_raw, _ = extract_synergy_features(
+                                    attr_target_full, 'attr', synergy_config, is_model_output=False, n_synergy_classes=n_bins
+                                )
+                            # If target already one-hot, convert to indices; else treat as normalized scalar
+                            if syn_target_raw.shape[-1] == n_bins:
+                                target_classes = syn_target_raw.argmax(dim=-1).view(-1)
+                                logits_reshaped = syn_logits.view(-1, n_bins)
+                                syn_ce = torch.nn.functional.cross_entropy(logits_reshaped, target_classes)
+                            else:
+                                syn_ce = calculate_synergy_loss_with_crossentropy(syn_logits, syn_target_raw, n_bins=n_bins)
+                            scaled_syn_ce = synergy_loss_scale * syn_ce
+                            if fusion_loss is None:
+                                fusion_loss = scaled_syn_ce
+                            else:
+                                fusion_loss = fusion_loss + scaled_syn_ce
+                            num_domains = max(num_domains, 1)
+                            loss_details["fusion_syn_synergy_loss"] = syn_ce.item()
+                            loss_details["fusion_syn_synergy_loss_scaled"] = scaled_syn_ce.item()
+                        except Exception as e:
+                            logger.warning(f"Failed to compute 'syn' head CE loss: {e}")
                     
                     # Average loss
                     if fusion_loss is not None and num_domains > 1:
@@ -556,6 +614,26 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                         loss_details['synergy_loss_scale'] = synergy_loss_scale
                         total_loss = weighted_fusion_loss
             
+            # Helper to temporarily monkey-patch model.fuse to inject noise post-fusion
+            def _monkey_patch_fuse_with_noise(model, synergy_config):
+                original_fuse = getattr(model, 'fuse', None)
+                if original_fuse is None:
+                    return None
+                noise_cfg = synergy_config.get('noise', {})
+                site = noise_cfg.get('site', 'post_fusion_post_tanh')
+                train_std = float(noise_cfg.get('train_std', 0.0))
+
+                def noisy_fuse(encoded, selection_scores=None):
+                    gw_state_inner = original_fuse(encoded, selection_scores)
+                    if 'post_tanh' in str(site):
+                        gw_state_inner = torch.tanh(gw_state_inner)
+                    if train_std and train_std > 0.0:
+                        gw_state_inner = gw_state_inner + train_std * torch.randn_like(gw_state_inner)
+                    return gw_state_inner
+
+                model.fuse = noisy_fuse
+                return original_fuse
+
             # 2. Demi-cycle and cycle losses - ignore synergy features entirely
             # Use original functions but only compare base dimensions for attr domain
             
@@ -585,6 +663,7 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
             if loss_weights.get('demi_cycle', 0.0) > 0:
                 from losses_and_weights_GLW_training import calculate_demi_cycle_loss
                 original_attr_decoder = _monkey_patch_attr_decoder_for_base_only(model, synergy_config)
+                original_fuse = _monkey_patch_fuse_with_noise(model, synergy_config)
                 
                 try:
                     demi_loss, demi_details = calculate_demi_cycle_loss(model, batch, criterion)
@@ -592,6 +671,9 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                     # Restore original decoder
                     if original_attr_decoder is not None:
                         model.gw_decoders['attr'] = original_attr_decoder
+                    # Restore original fuse
+                    if original_fuse is not None:
+                        model.fuse = original_fuse
                 
                 loss_details.update(demi_details)
                 
@@ -606,6 +688,7 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
             if loss_weights.get('cycle', 0.0) > 0:
                 from losses_and_weights_GLW_training import calculate_cycle_loss
                 original_attr_decoder = _monkey_patch_attr_decoder_for_base_only(model, synergy_config)
+                original_fuse = _monkey_patch_fuse_with_noise(model, synergy_config)
                 
                 try:
                     cycle_loss, cycle_details = calculate_cycle_loss(model, batch, criterion)
@@ -613,6 +696,9 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                     # Restore original decoder
                     if original_attr_decoder is not None:
                         model.gw_decoders['attr'] = original_attr_decoder
+                    # Restore original fuse
+                    if original_fuse is not None:
+                        model.fuse = original_fuse
                 
                 loss_details.update(cycle_details)
                 
@@ -630,11 +716,17 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                 from losses_and_weights_GLW_training import calculate_translation_loss, detect_paired_samples
                 # Detect paired samples for translation loss
                 paired_mask = detect_paired_samples(batch, synergy_targets=synergy_targets)
-                # Use existing translation loss - it already handles synergy_config masking
-                translation_loss, translation_details = calculate_translation_loss(
-                    model, batch, criterion, synergy_targets=synergy_targets, 
-                    paired_mask=paired_mask, synergy_config=synergy_config
-                )
+                # Inject noise in fuse for translation computations
+                original_fuse = _monkey_patch_fuse_with_noise(model, synergy_config)
+                try:
+                    # Use existing translation loss - it already handles synergy_config masking
+                    translation_loss, translation_details = calculate_translation_loss(
+                        model, batch, criterion, synergy_targets=synergy_targets, 
+                        paired_mask=paired_mask, synergy_config=synergy_config
+                    )
+                finally:
+                    if original_fuse is not None:
+                        model.fuse = original_fuse
                 loss_details.update(translation_details)
                 
                 weighted_translation_loss = loss_weights['translation'] * translation_loss

@@ -46,7 +46,7 @@ while current_dir != current_dir.parent:
 
 # Import our synergy modules
 from synergy_dataset import SynergyDataset, create_synergy_dataloaders
-from synergy_losses import create_synergy_loss_function, process_synergy_batch
+from synergy_losses import create_synergy_loss_function, process_synergy_batch, extract_base_features_only
 from metrics.predictability import compute_predictability
 
 # Import from the original training script - reuse existing functions
@@ -94,6 +94,18 @@ class SynergyExperimentConfig:
         
         # Synergy configuration
         self.synergy_config = config_dict['synergy']
+        # Backward-compatible defaults and extensions
+        # Noise configuration for post-fusion latent (training/inference)
+        self.synergy_config.setdefault('noise', {})
+        self.synergy_config['noise'].setdefault('train_std', 0.0)
+        self.synergy_config['noise'].setdefault('eval_std', self.synergy_config['noise']['train_std'])
+        self.synergy_config['noise'].setdefault('site', 'post_fusion_post_tanh')
+        # Whether attr decoder includes synergy logits (legacy) or not
+        self.synergy_config.setdefault('attr_includes_synergy', True)
+        # External synergy head (third decoder) configuration
+        self.synergy_config.setdefault('enable_syn_head', False)
+        self.synergy_config.setdefault('n_bins', 8)
+        self.synergy_config.setdefault('syn_head_n_layers', 3)
         
         # Add synergy loss scale if not present
         if 'loss_scale' not in self.synergy_config:
@@ -139,8 +151,23 @@ class SynergyExperimentConfig:
     @classmethod
     def from_file(cls, config_path: str) -> 'SynergyExperimentConfig':
         """Load configuration from JSON file."""
+        config_path = str(config_path)
         with open(config_path, 'r') as f:
             config_dict = json.load(f)
+        # Resolve relative paths w.r.t. the config file location
+        try:
+            base_dir = Path(config_path).parent.resolve()
+            if 'data' in config_dict and isinstance(config_dict['data'], dict):
+                data_dir = config_dict['data'].get('dir')
+                if isinstance(data_dir, str) and not Path(data_dir).is_absolute():
+                    resolved = str((base_dir / data_dir).resolve())
+                    config_dict['data']['dir'] = resolved
+                image_dir = config_dict['data'].get('image_dir')
+                if isinstance(image_dir, str) and image_dir and not Path(image_dir).is_absolute():
+                    resolved_img = str((base_dir / image_dir).resolve())
+                    config_dict['data']['image_dir'] = resolved_img
+        except Exception as e:
+            logger.warning(f"Failed to resolve relative paths in config: {e}")
         return cls(config_dict)
     
     def save_to_file(self, output_path: str):
@@ -234,13 +261,17 @@ class SynergyTrainer:
             output_dim = base_dim_output 
 
             if (domain_name in self.config.synergy_config.get('feature_indices', {}) and 
-                self.config.synergy_config['feature_indices'][domain_name]): #TODO what is feature_indices? does it not exist for both domains?
-                # Add synergy feature dimensions as logits (8 classes per synergy feature)
-                synergy_features = len(self.config.synergy_config['feature_indices'][domain_name])
-                n_synergy_classes = 8  # XOR has 8 discrete classes
-                synergy_logit_dims = synergy_features * n_synergy_classes #TODO WHY? this seems wrong
-                output_dim += synergy_logit_dims
-                logger.info(f"Expanding {domain_name} decoder output: {base_dim_output} -> {output_dim} (+{synergy_features} synergy features × {n_synergy_classes} classes = +{synergy_logit_dims} logits)")
+                self.config.synergy_config['feature_indices'][domain_name]):
+                # Optionally include synergy logits on attr decoder unless disabled
+                include_attr_synergy = True
+                if domain_name == 'attr' and not self.config.synergy_config.get('attr_includes_synergy', True):
+                    include_attr_synergy = False
+                if include_attr_synergy:
+                    synergy_features = len(self.config.synergy_config['feature_indices'][domain_name])
+                    n_synergy_classes = int(self.config.synergy_config.get('n_bins', 8))
+                    synergy_logit_dims = synergy_features * n_synergy_classes
+                    output_dim += synergy_logit_dims
+                    logger.info(f"Expanding {domain_name} decoder output: {base_dim_output} -> {output_dim} (+{synergy_features} synergy features × {n_synergy_classes} classes = +{synergy_logit_dims} logits)")
             
             # Create encoder with appropriate input dimension
             gw_encoders[domain_name] = GWEncoder(
@@ -265,6 +296,23 @@ class SynergyTrainer:
         # Create fusion weights
         fusion_weights = self.config.fusion_weights.copy()
         
+        # Optionally add a third decoder head for synergy predictions ('syn') before building module
+        if self.config.synergy_config.get('enable_syn_head', False):
+            n_synergy_features = len(self.config.synergy_config.get('feature_indices', {}).get('attr', []))
+            if n_synergy_features <= 0:
+                logger.warning("enable_syn_head=True but no synergy features declared for 'attr'. Defaulting to 1 feature.")
+                n_synergy_features = 1
+            n_bins = int(self.config.synergy_config.get('n_bins', 8))
+            syn_out_dim = n_synergy_features * n_bins
+            syn_n_layers = int(self.config.synergy_config.get('syn_head_n_layers', 3))
+            gw_decoders['syn'] = GWDecoder(
+                in_dim=self.config.workspace_dim,
+                hidden_dim=self.config.decoder_hidden_dim,
+                out_dim=syn_out_dim,
+                n_layers=syn_n_layers,
+            )
+            logger.info(f"Added 'syn' decoder head: out_dim={syn_out_dim}, n_layers={syn_n_layers}")
+
         # Create GW module
         gw_module = GWModuleConfigurableFusion(
             domain_modules=domain_modules,
@@ -273,11 +321,11 @@ class SynergyTrainer:
             gw_decoders=gw_decoders,
             fusion_weights=fusion_weights,
         )
-        
+
         # Store architecture parameters
         gw_module.hidden_dim = self.config.hidden_dim
         gw_module.n_layers = self.config.n_layers
-        
+
         # Freeze domain modules
         for domain_name, domain_module in domain_modules.items():
             for param in domain_module.parameters():
@@ -470,8 +518,14 @@ class SynergyTrainer:
                             all_decoded[domain] = []
                             all_targets[domain] = []
                         
-                        all_decoded[domain].append(decoded[domain].cpu())
-                        all_targets[domain].append(batch_targets[domain].cpu())
+                        recon = decoded[domain]
+                        tgt = batch_targets[domain]
+                        # If attr synergy logits are disabled, compare only base features (11D)
+                        if domain == 'attr' and not self.config.synergy_config.get('attr_includes_synergy', True):
+                            recon = extract_base_features_only(recon, 'attr', self.config.synergy_config)
+                            tgt = extract_base_features_only(tgt, 'attr', self.config.synergy_config)
+                        all_decoded[domain].append(recon.cpu())
+                        all_targets[domain].append(tgt.cpu())
                         
                 except Exception as e:
                     logger.warning(f"Error processing validation batch {batch_idx}: {e}")
@@ -779,6 +833,14 @@ Example usage:
     parser.add_argument("--gpu-memory-percent", type=float, default=100.0, help="GPU memory usage limit as percentage of total GPU memory (default: 25.0 for 10GB/40GB)")
     parser.add_argument("--workspace-dim", type=int, default=None, help="Override workspace dimension (GLW latent)")
     parser.add_argument("--decoder-hidden-dim", type=int, default=None, help="Override decoder hidden width")
+    # New options for noise and synergy head
+    parser.add_argument("--enable-syn-head", action="store_true", help="Enable third 'syn' decoder head for synergy classification")
+    parser.add_argument("--disable-attr-synergy", action="store_true", help="Do not include synergy logits on attr decoder output")
+    parser.add_argument("--train-noise-std", type=float, default=None, help="Std of Gaussian noise injected into post-fusion post-tanh latent during training")
+    parser.add_argument("--eval-noise-std", type=float, default=None, help="Std of Gaussian noise injected during evaluation")
+    parser.add_argument("--noise-site", type=str, default=None, help="Noise injection site identifier (default: post_fusion_post_tanh)")
+    parser.add_argument("--synergy-bins", type=int, default=None, help="Number of discrete synergy bins (default: 8)")
+    parser.add_argument("--syn-head-n-layers", type=int, default=None, help="Number of layers for syn decoder head (default: 3)")
     
     args = parser.parse_args()
     
@@ -818,6 +880,31 @@ Example usage:
     if args.synergy_loss_scale:
         config.synergy_config['loss_scale'] = args.synergy_loss_scale
         logger.info(f"Override synergy loss scale: {args.synergy_loss_scale}")
+    # Apply new CLI overrides for noise and syn head
+    if args.enable_syn_head:
+        config.synergy_config['enable_syn_head'] = True
+        logger.info("Enable syn head: True")
+    if args.disable_attr_synergy:
+        config.synergy_config['attr_includes_synergy'] = False
+        logger.info("Disable attr synergy output: True")
+    if args.train_noise_std is not None:
+        config.synergy_config.setdefault('noise', {})
+        config.synergy_config['noise']['train_std'] = float(args.train_noise_std)
+        logger.info(f"Override train noise std: {args.train_noise_std}")
+    if args.eval_noise_std is not None:
+        config.synergy_config.setdefault('noise', {})
+        config.synergy_config['noise']['eval_std'] = float(args.eval_noise_std)
+        logger.info(f"Override eval noise std: {args.eval_noise_std}")
+    if args.noise_site is not None:
+        config.synergy_config.setdefault('noise', {})
+        config.synergy_config['noise']['site'] = args.noise_site
+        logger.info(f"Override noise site: {args.noise_site}")
+    if args.synergy_bins is not None:
+        config.synergy_config['n_bins'] = int(args.synergy_bins)
+        logger.info(f"Override synergy bins: {args.synergy_bins}")
+    if args.syn_head_n_layers is not None:
+        config.synergy_config['syn_head_n_layers'] = int(args.syn_head_n_layers)
+        logger.info(f"Override syn head n_layers: {args.syn_head_n_layers}")
     if args.batch_size:
         config.batch_size = args.batch_size
         logger.info(f"Override batch size: {args.batch_size}")
