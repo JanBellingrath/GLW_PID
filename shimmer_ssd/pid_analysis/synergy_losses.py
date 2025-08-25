@@ -804,16 +804,16 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                         else:
                             demi_loss = torch.tensor(0.0, device=gw_clean.device)
                             demi_details = {"demi_cycle_decode_encode_denoise": 0.0}
-                 
+                
                 loss_details.update(demi_details)
-                 
+                
                 weighted_demi_loss = demi_w * demi_loss
                 loss_details['weighted_demi_cycle_loss'] = weighted_demi_loss.item()
-                 
+                
                 if total_loss is None:
-                     total_loss = weighted_demi_loss
+                    total_loss = weighted_demi_loss
                 else:
-                     total_loss = total_loss + weighted_demi_loss
+                    total_loss = total_loss + weighted_demi_loss
             
             if cycle_w > 0:
                 from losses_and_weights_GLW_training import calculate_cycle_loss
