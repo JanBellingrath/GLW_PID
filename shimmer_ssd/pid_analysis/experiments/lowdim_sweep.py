@@ -361,6 +361,13 @@ Example usage:
         default=None,
         help="Override synergy loss scale from config"
     )
+    parser.add_argument(
+        "--syn-loss-type",
+        type=str,
+        default=None,
+        choices=["ce", "mse"],
+        help="Loss type for syn head: ce (classification) or mse (regression)"
+    )
     
     args = parser.parse_args()
     
@@ -388,6 +395,9 @@ Example usage:
     if args.synergy_loss_scale is not None:
         base_config.synergy_config['loss_scale'] = args.synergy_loss_scale
         logger.info(f"Override synergy loss scale: {args.synergy_loss_scale}")
+    if args.syn_loss_type is not None:
+        base_config.synergy_config['syn_loss_type'] = str(args.syn_loss_type)
+        logger.info(f"Override syn_loss_type: {args.syn_loss_type}")
     
     # Debug: Show what loss scale will be used
     current_loss_scale = base_config.synergy_config.get('loss_scale', 1.0)

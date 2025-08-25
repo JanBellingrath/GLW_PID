@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Dict, Any, List
 
 import torch
+import torch.nn.functional as F
 
 # Ensure parent directory (pid_analysis) is importable
 _SCRIPT_DIR = Path(__file__).parent
@@ -46,6 +47,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", type=str, required=True, help="Path to synergy configuration JSON")
     parser.add_argument("--device", type=str, default=None, help="Device (cuda/cpu)")
     parser.add_argument("--evaluate-only", action="store_true", help="Skip training and only run evaluation")
+    parser.add_argument("--checkpoint", type=str, default=None, help="Path to a trained model checkpoint to load for evaluation-only")
     parser.add_argument("--eval-noise-stds", type=str, default=None, help="Comma-separated list of eval noise stds to sweep")
     # Pass-through flags to enable the syn setup and noise (mirrors train_synergy_glw.py)
     parser.add_argument("--enable-syn-head", action="store_true")
@@ -55,6 +57,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--noise-site", type=str, default=None)
     parser.add_argument("--synergy-bins", type=int, default=None)
     parser.add_argument("--syn-head-n-layers", type=int, default=None)
+    parser.add_argument("--syn-loss-type", type=str, default=None, choices=["ce", "mse"], help="Loss type for syn head: ce or mse")
+    # Capacity and demi-cycle style overrides
+    parser.add_argument("--hidden-dim", type=int, default=None, help="Override encoder hidden width")
+    parser.add_argument("--decoder-hidden-dim", type=int, default=None, help="Override decoder hidden width")
+    parser.add_argument("--demi-cycle-style", type=str, default=None, choices=["encode_decode", "decode_encode", "auto"], help="Demi-cycle style or auto schedule-switch")
     parser.add_argument("--experiment-name", type=str, default="fusion_only", help="Which loss config to run (must exist in config)")
     return parser.parse_args()
 
@@ -78,18 +85,27 @@ def apply_overrides(config: SynergyExperimentConfig, args: argparse.Namespace) -
         config.synergy_config['n_bins'] = int(args.synergy_bins)
     if args.syn_head_n_layers is not None:
         config.synergy_config['syn_head_n_layers'] = int(args.syn_head_n_layers)
+    if args.syn_loss_type is not None:
+        config.synergy_config['syn_loss_type'] = str(args.syn_loss_type)
+    if args.hidden_dim is not None:
+        config.hidden_dim = int(args.hidden_dim)
+    if args.decoder_hidden_dim is not None:
+        config.decoder_hidden_dim = int(args.decoder_hidden_dim)
+    if args.demi_cycle_style is not None:
+        config.synergy_config['demi_cycle_style'] = str(args.demi_cycle_style)
     # Restrict to a single experiment if provided
     if args.experiment_name:
         config.loss_configs = [cfg for cfg in config.loss_configs if cfg['name'] == args.experiment_name]
 
 
 @torch.no_grad()
-def evaluate_tradeoff(trainer: SynergyTrainer, eval_noise_stds: List[float]) -> Dict[str, Any]:
+def evaluate_tradeoff(trainer: SynergyTrainer, eval_noise_stds: List[float], path_mode: str = 'both') -> Dict[str, Any]:
     model = trainer.model
     device = trainer.device
     noise_cfg = trainer.config.synergy_config.get('noise', {})
     site = noise_cfg.get('site', 'post_fusion_post_tanh')
     n_bins = int(trainer.config.synergy_config.get('n_bins', 8))
+    syn_loss_type = str(trainer.config.synergy_config.get('syn_loss_type', 'ce')).lower()
 
     results = {}
 
@@ -110,6 +126,11 @@ def evaluate_tradeoff(trainer: SynergyTrainer, eval_noise_stds: List[float]) -> 
         total = 0
         correct_direct = 0
         correct_cycle = 0
+        # For regression mode
+        sse_direct = 0.0
+        sse_cycle = 0.0
+        count_direct = 0
+        count_cycle = 0
 
         for batch in val_loader:
             # Separate inputs and targets from flattened batch
@@ -134,59 +155,101 @@ def evaluate_tradeoff(trainer: SynergyTrainer, eval_noise_stds: List[float]) -> 
             gw_state = model.fuse(latents, selection_scores={})
             gw_state_noisy = inject_noise(gw_state, std)
 
-            # Direct syn prediction
+            # Prepare logits per requested path(s)
             if 'syn' not in model.gw_decoders:
                 raise RuntimeError("'syn' decoder head not available. Enable with --enable-syn-head and retrain.")
-            syn_logits_direct = model.gw_decoders['syn'](gw_state_noisy)
 
-            # Broadcast-cycle: decode to each modality base, re-encode, and re-fuse
-            decoded_attr = model.gw_decoders['attr'](gw_state_noisy) if 'attr' in model.gw_decoders else None
-            decoded_v = model.gw_decoders['v'](gw_state_noisy) if 'v' in model.gw_decoders else None
+            syn_logits_direct = None
+            syn_logits_cycle = None
+            if path_mode in ('both', 'direct'):
+                syn_logits_direct = model.gw_decoders['syn'](gw_state_noisy)
 
-            re_latents = {}
-            if decoded_attr is not None and 'attr' in model.gw_encoders:
-                re_latents['attr'] = model.gw_encoders['attr'](decoded_attr)
-            if decoded_v is not None and 'v' in model.gw_encoders:
-                re_latents['v'] = model.gw_encoders['v'](decoded_v)
+            if path_mode in ('both', 'cycle'):
+                decoded_attr = model.gw_decoders['attr'](gw_state_noisy) if 'attr' in model.gw_decoders else None
+                decoded_v = model.gw_decoders['v'](gw_state_noisy) if 'v' in model.gw_decoders else None
 
-            if not re_latents:
-                continue
+                re_latents = {}
+                if decoded_attr is not None and 'attr' in model.gw_encoders:
+                    re_latents['attr'] = model.gw_encoders['attr'](decoded_attr)
+                if decoded_v is not None and 'v' in model.gw_encoders:
+                    re_latents['v'] = model.gw_encoders['v'](decoded_v)
 
-            gw_state_refused = model.fuse(re_latents, selection_scores={})
-            syn_logits_cycle = model.gw_decoders['syn'](gw_state_refused)
+                if not re_latents:
+                    # If no cycle path possible, skip cycle for this batch
+                    pass
+                else:
+                    gw_state_refused = model.fuse(re_latents, selection_scores={})
+                    syn_logits_cycle = model.gw_decoders['syn'](gw_state_refused)
 
-            # Build target class indices from attr target
+            # Build target values from attr target
             if 'attr' not in targets:
                 continue
             syn_target_scalar, _ = extract_synergy_features(targets['attr'], 'attr', trainer.config.synergy_config, is_model_output=False, n_synergy_classes=n_bins)
-            # If synergy target is one-hot (B, n_bins), reduce to class indices
-            if syn_target_scalar.shape[-1] == n_bins:
-                target_classes = syn_target_scalar.argmax(dim=-1).view(-1)
+
+            if syn_loss_type == 'mse':
+                # Compute regression SSE and counts for mean at the end
+                def sse_from_logits(logits: torch.Tensor):
+                    if logits is None:
+                        return 0.0, 0
+                    pred = torch.sigmoid(logits[..., :1] if logits.shape[-1] > 1 else logits)
+                    tgt = syn_target_scalar.view_as(pred)
+                    sse = F.mse_loss(pred, tgt, reduction='sum').item()
+                    return sse, pred.shape[0]
+
+                sse_d, cnt_d = sse_from_logits(syn_logits_direct)
+                sse_c, cnt_c = sse_from_logits(syn_logits_cycle)
+                sse_direct += sse_d
+                sse_cycle += sse_c
+                count_direct += cnt_d
+                count_cycle += cnt_c
+                total += syn_target_scalar.shape[0]
             else:
-                target_classes = convert_synergy_targets_to_classes(syn_target_scalar.view(-1), n_bins=n_bins)
-
-            # Handle logits shape [B, n_bins] or [B, n_features*n_bins]
-            def logits_to_pred(logits: torch.Tensor) -> torch.Tensor:
-                if logits.shape[-1] == n_bins:
-                    return logits.argmax(dim=-1).view(-1)
+                # Classification accuracy
+                if syn_target_scalar.shape[-1] == n_bins:
+                    target_classes = syn_target_scalar.argmax(dim=-1).view(-1)
                 else:
-                    # Assume single feature for simplicity; take first group of n_bins
-                    first_group = logits[..., :n_bins]
-                    return first_group.argmax(dim=-1).view(-1)
+                    target_classes = convert_synergy_targets_to_classes(syn_target_scalar.view(-1), n_bins=n_bins)
 
-            pred_direct = logits_to_pred(syn_logits_direct)
-            pred_cycle = logits_to_pred(syn_logits_cycle)
+                # Handle logits shape [B, n_bins] or [B, n_features*n_bins]
+                def logits_to_pred(logits: torch.Tensor) -> torch.Tensor:
+                    if logits.shape[-1] == n_bins:
+                        return logits.argmax(dim=-1).view(-1)
+                    else:
+                        first_group = logits[..., :n_bins]
+                        return first_group.argmax(dim=-1).view(-1)
 
-            batch_size = target_classes.shape[0]
-            total += batch_size
-            correct_direct += (pred_direct == target_classes).sum().item()
-            correct_cycle += (pred_cycle == target_classes).sum().item()
+                pred_direct = logits_to_pred(syn_logits_direct) if syn_logits_direct is not None else None
+                pred_cycle = logits_to_pred(syn_logits_cycle) if syn_logits_cycle is not None else None
 
-        results[str(std)] = {
-            'direct_accuracy': (correct_direct / total) if total else 0.0,
-            'cycle_accuracy': (correct_cycle / total) if total else 0.0,
-            'num_samples': total,
-        }
+                batch_size = target_classes.shape[0]
+                total += batch_size
+                if pred_direct is not None:
+                    correct_direct += (pred_direct == target_classes).sum().item()
+                if pred_cycle is not None:
+                    correct_cycle += (pred_cycle == target_classes).sum().item()
+
+        # Use None when a path was not computed
+        if syn_loss_type == 'mse':
+            direct_mse = (sse_direct / count_direct) if count_direct > 0 else None
+            cycle_mse = (sse_cycle / count_cycle) if count_cycle > 0 else None
+            results[str(std)] = {
+                'mode': 'mse',
+                'direct_mse': direct_mse,
+                'cycle_mse': cycle_mse,
+                'direct_accuracy': None,
+                'cycle_accuracy': None,
+                'num_samples_direct': int(count_direct),
+                'num_samples_cycle': int(count_cycle),
+            }
+        else:
+            direct_acc = (correct_direct / total) if (total and path_mode in ('both', 'direct')) else None
+            cycle_acc = (correct_cycle / total) if (total and path_mode in ('both', 'cycle')) else None
+            results[str(std)] = {
+                'mode': 'ce',
+                'direct_accuracy': direct_acc,
+                'cycle_accuracy': cycle_acc,
+                'num_samples': total,
+            }
 
     return results
 
@@ -208,7 +271,57 @@ def main():
 
     # Train unless evaluate-only
     if not args.evaluate_only:
+        # Ensure model has epoch counters for epoch-based scheduling
+        try:
+            setattr(trainer.model, 'current_epoch', 0)
+            setattr(trainer.model, 'total_epochs', int(trainer.config.training.get('epochs', 0)))
+        except Exception:
+            pass
         trainer.run_all_experiments()
+    else:
+        # Load checkpoint if provided or discover from results
+        ckpt_path = args.checkpoint
+        if ckpt_path is None:
+            # Try to discover from experiment_results.json for given experiment name
+            results_file = Path(config.output_dir) / 'experiment_results.json'
+            if results_file.exists():
+                try:
+                    with open(results_file, 'r') as f:
+                        results = json.load(f)
+                    # pick last matching experiment or any if only one
+                    matches = [r for r in results if r.get('experiment_name') == args.experiment_name]
+                    if not matches and results:
+                        matches = [results[-1]]
+                    if matches:
+                        ckpt_path = matches[-1].get('checkpoint_path')
+                except Exception:
+                    ckpt_path = None
+        if ckpt_path:
+            try:
+                state = torch.load(ckpt_path, map_location=trainer.device)
+                if isinstance(state, dict):
+                    # common keys
+                    if 'state_dict' in state:
+                        sd = state['state_dict']
+                    elif 'model_state_dict' in state:
+                        sd = state['model_state_dict']
+                    else:
+                        sd = state
+                else:
+                    sd = state
+                try:
+                    trainer.model.load_state_dict(sd, strict=False)
+                except Exception:
+                    # Try stripping 'module.' prefixes
+                    from collections import OrderedDict
+                    new_sd = OrderedDict()
+                    for k, v in sd.items():
+                        new_k = k.replace('module.', '') if k.startswith('module.') else k
+                        new_sd[new_k] = v
+                    trainer.model.load_state_dict(new_sd, strict=False)
+                print(f"Loaded checkpoint: {ckpt_path}")
+            except Exception as e:
+                print(f"Warning: failed to load checkpoint {ckpt_path}: {e}")
 
     # Build noise std sweep
     if args.eval_noise_std is not None and args.eval_noise_stds is None:

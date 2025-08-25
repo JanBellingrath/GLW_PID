@@ -73,6 +73,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--variant-filter", type=str, default="both", choices=["both", "direct-only", "cycle-only"],
                         help="When syn-training-style is 'separate', optionally run only one variant")
     parser.add_argument("--wandb-group", type=str, default="train-noise-sweep", help="W&B group for this sweep")
+    parser.add_argument("--syn-loss-type", type=str, default=None, choices=["ce", "mse"], help="Loss type for syn head: ce or mse")
     return parser.parse_args()
 
 
@@ -140,6 +141,8 @@ def main():
         if args.syn_cycle_ratio is not None:
             ratio = max(0.0, min(1.0, float(args.syn_cycle_ratio)))
             run_config.synergy_config['syn_cycle_ratio'] = ratio
+        if args.syn_loss_type is not None:
+            run_config.synergy_config['syn_loss_type'] = str(args.syn_loss_type)
         # Noise: configure train_std for training branch; eval-only path will ignore
         run_config.synergy_config.setdefault('noise', {})
         run_config.synergy_config['noise']['train_std'] = float(train_std)
@@ -171,6 +174,8 @@ def main():
                 var_config.synergy_config['enable_syn_head'] = True
             if args.disable_attr_synergy:
                 var_config.synergy_config['attr_includes_synergy'] = False
+            if args.syn_loss_type is not None:
+                var_config.synergy_config['syn_loss_type'] = str(args.syn_loss_type)
             if args.syn_cycle_ratio is not None and args.syn_training_style != 'separate':
                 var_config.synergy_config['syn_cycle_ratio'] = max(0.0, min(1.0, float(args.syn_cycle_ratio)))
             # For separate, force ratio
@@ -262,12 +267,38 @@ def main():
             # Prepare per-model plot
             xs = [float(k) for k in results.keys()]
             xs.sort()
-            # Use 0.0 for missing path for plotting consistency
-            direct = [results[f"{x}"]['direct_accuracy'] if results[f"{x}"]['direct_accuracy'] is not None else 0.0 for x in xs]
-            cycle = [results[f"{x}"]['cycle_accuracy'] if results[f"{x}"]['cycle_accuracy'] is not None else 0.0 for x in xs]
-            title = f"eval curves (train_std={train_std}, {var['name']})"
-            out_png = run_output / 'tradeoff_plot.png'
-            plot_tradeoff(xs, direct, cycle, title, out_png)
+            # Choose metric depending on mode
+            first_key = f"{xs[0]}" if xs else None
+            mode = results[first_key].get('mode', 'ce') if first_key else 'ce'
+            if mode == 'mse':
+                direct = [results[f"{x}"]['direct_mse'] if results[f"{x}"]['direct_mse'] is not None else None for x in xs]
+                cycle = [results[f"{x}"]['cycle_mse'] if results[f"{x}"]['cycle_mse'] is not None else None for x in xs]
+                # Replace None with NaN for plotting gaps
+                direct = [d if d is not None else float('nan') for d in direct]
+                cycle = [c if c is not None else float('nan') for c in cycle]
+                title = f"eval curves (MSE) train_std={train_std}, {var['name']}"
+                out_png = run_output / 'tradeoff_plot.png'
+                # Reuse plotting but y-label will still say accuracy; create a local variant
+                import matplotlib.pyplot as plt
+                plt.figure(figsize=(6, 4))
+                plt.plot(xs, direct, label='direct MSE', marker='o')
+                plt.plot(xs, cycle, label='cycle MSE', marker='o')
+                plt.xlabel('eval noise std')
+                plt.ylabel('MSE')
+                plt.title(title)
+                plt.grid(True, alpha=0.3)
+                plt.legend()
+                out_png.parent.mkdir(parents=True, exist_ok=True)
+                plt.tight_layout()
+                plt.savefig(out_png)
+                plt.close()
+            else:
+                # Use 0.0 for missing path for plotting consistency
+                direct = [results[f"{x}"]['direct_accuracy'] if results[f"{x}"]['direct_accuracy'] is not None else 0.0 for x in xs]
+                cycle = [results[f"{x}"]['cycle_accuracy'] if results[f"{x}"]['cycle_accuracy'] is not None else 0.0 for x in xs]
+                title = f"eval curves (train_std={train_std}, {var['name']})"
+                out_png = run_output / 'tradeoff_plot.png'
+                plot_tradeoff(xs, direct, cycle, title, out_png)
             print(f"Saved tradeoff plot to {out_png}")
 
             # Save to cache for cross-model comparison plot
@@ -305,6 +336,7 @@ def main():
                 'xs': xs,
                 'direct': direct,
                 'cycle': cycle,
+                'mode': mode,
             })
 
         # If separate models were evaluated, produce a single comparison plot per train_std
@@ -333,18 +365,36 @@ def main():
     if joint_curves:
         plt.figure(figsize=(7, 5))
         cmap = plt.get_cmap('tab10')
-        for idx, curve in enumerate(joint_curves):
-            color = cmap(idx % 10)
-            plt.plot(curve['xs'], curve['direct'], label=f"direct {curve['label']}", color=color, linestyle='-')
-            plt.plot(curve['xs'], curve['cycle'], label=f"cycle {curve['label']}", color=color, linestyle='--')
-        plt.xlabel('eval noise std')
-        plt.ylabel('accuracy')
-        plt.ylim(0.0, 1.0)
-        plt.title('joint eval curves')
-        plt.grid(True, alpha=0.3)
-        plt.legend(ncol=2, fontsize=8)
+        # Separate classification and regression curves for proper axis labels
+        any_mse = any(curve.get('mode', 'ce') == 'mse' for curve in joint_curves)
+        if any_mse:
+            # Plot MSE curves
+            for idx, curve in enumerate([c for c in joint_curves if c.get('mode', 'ce') == 'mse']):
+                color = cmap(idx % 10)
+                plt.plot(curve['xs'], curve['direct'], label=f"direct MSE {curve['label']}", color=color, linestyle='-')
+                plt.plot(curve['xs'], curve['cycle'], label=f"cycle MSE {curve['label']}", color=color, linestyle='--')
+            plt.xlabel('eval noise std')
+            plt.ylabel('MSE')
+            plt.title('joint eval curves (MSE)')
+            plt.grid(True, alpha=0.3)
+            plt.legend(ncol=2, fontsize=8)
+        else:
+            for idx, curve in enumerate(joint_curves):
+                color = cmap(idx % 10)
+                plt.plot(curve['xs'], curve['direct'], label=f"direct {curve['label']}", color=color, linestyle='-')
+                plt.plot(curve['xs'], curve['cycle'], label=f"cycle {curve['label']}", color=color, linestyle='--')
+            plt.xlabel('eval noise std')
+            plt.ylabel('accuracy')
+            plt.ylim(0.0, 1.0)
+            plt.title('joint eval curves')
+            plt.grid(True, alpha=0.3)
+            plt.legend(ncol=2, fontsize=8)
         base_output.mkdir(parents=True, exist_ok=True)
-        joint_png = base_output / 'sweep_joint_tradeoff_plot.png'
+        joint_png = base_output 
+        if any_mse:
+            joint_png = joint_png / 'sweep_joint_tradeoff_plot_mse.png'
+        else:
+            joint_png = joint_png / 'sweep_joint_tradeoff_plot.png'
         plt.tight_layout()
         plt.savefig(joint_png)
         plt.close()

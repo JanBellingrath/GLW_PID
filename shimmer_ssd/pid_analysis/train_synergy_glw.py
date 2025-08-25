@@ -99,7 +99,7 @@ class SynergyExperimentConfig:
         self.synergy_config.setdefault('noise', {})
         self.synergy_config['noise'].setdefault('train_std', 0.0)
         self.synergy_config['noise'].setdefault('eval_std', self.synergy_config['noise']['train_std'])
-        self.synergy_config['noise'].setdefault('site', 'post_fusion_post_tanh')
+        self.synergy_config['noise'].setdefault('site', 'post_fusion_pre_tanh')  # Default to pre-tanh noise injection
         # Whether attr decoder includes synergy logits (legacy) or not
         self.synergy_config.setdefault('attr_includes_synergy', True)
         # External synergy head (third decoder) configuration
@@ -108,6 +108,8 @@ class SynergyExperimentConfig:
         self.synergy_config.setdefault('syn_head_n_layers', 3)
         # Ratio for training syn CE via broadcast-cycle vs direct (default 0.5)
         self.synergy_config.setdefault('syn_cycle_ratio', 0.5)
+        # Syn loss type: 'ce' (classification) or 'mse' (regression)
+        self.synergy_config.setdefault('syn_loss_type', 'ce')
         # Demi-cycle style: 'encode_decode' (default) or 'decode_encode' (denoising)
         self.synergy_config.setdefault('demi_cycle_style', 'encode_decode')
         
@@ -306,8 +308,13 @@ class SynergyTrainer:
             if n_synergy_features <= 0:
                 logger.warning("enable_syn_head=True but no synergy features declared for 'attr'. Defaulting to 1 feature.")
                 n_synergy_features = 1
-            n_bins = int(self.config.synergy_config.get('n_bins', 8))
-            syn_out_dim = n_synergy_features * n_bins
+            syn_loss_type = str(self.config.synergy_config.get('syn_loss_type', 'ce')).lower()
+            if syn_loss_type == 'mse':
+                # Single scalar per synergy feature (often just 1)
+                syn_out_dim = n_synergy_features
+            else:
+                n_bins = int(self.config.synergy_config.get('n_bins', 8))
+                syn_out_dim = n_synergy_features * n_bins
             syn_n_layers = int(self.config.synergy_config.get('syn_head_n_layers', 3))
             gw_decoders['syn'] = GWDecoder(
                 in_dim=self.config.workspace_dim,
@@ -854,6 +861,7 @@ Example usage:
     parser.add_argument("--syn-head-n-layers", type=int, default=None, help="Number of layers for syn decoder head (default: 3)")
     parser.add_argument("--syn-cycle-ratio", type=float, default=None, help="Weight for syn CE via broadcast-cycle (0..1), remainder on direct path (default: 0.5)")
     parser.add_argument("--demi-cycle-style", type=str, default=None, choices=["encode_decode", "decode_encode"], help="Demi-cycle style: encode_decode (default) or decode_encode (denoising)")
+    parser.add_argument("--syn-loss-type", type=str, default=None, choices=["ce", "mse"], help="Loss type for syn head: ce (default) or mse (regression)")
     
     args = parser.parse_args()
     
@@ -900,6 +908,9 @@ Example usage:
     if args.enable_syn_head:
         config.synergy_config['enable_syn_head'] = True
         logger.info("Enable syn head: True")
+    if args.syn_loss_type is not None:
+        config.synergy_config['syn_loss_type'] = str(args.syn_loss_type)
+        logger.info(f"Override syn_loss_type: {args.syn_loss_type}")
     if args.disable_attr_synergy:
         config.synergy_config['attr_includes_synergy'] = False
         logger.info("Disable attr synergy output: True")

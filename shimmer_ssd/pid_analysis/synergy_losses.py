@@ -116,6 +116,37 @@ def calculate_synergy_loss_with_crossentropy(
 
 
 
+def mse_loss_syn(
+    syn_logits: torch.Tensor,
+    syn_target_scalar: torch.Tensor,
+    apply_sigmoid: bool = True
+) -> torch.Tensor:
+    """
+    Compute MSE loss for a continuous synergy target in [0,1] using a
+    single-logit syn head. Optionally applies sigmoid to map logits to (0,1).
+
+    Args:
+        syn_logits: Predicted logits with shape [..., 1] (or [..., n_features], first used)
+        syn_target_scalar: Ground-truth scalar(s) in [0,1] with shape [..., 1] (or [...])
+        apply_sigmoid: If True, pass logits through sigmoid before MSE
+
+    Returns:
+        Mean squared error between prediction and target.
+    """
+    if syn_logits.numel() == 0 or syn_target_scalar.numel() == 0:
+        return torch.tensor(0.0, device=syn_logits.device, requires_grad=True)
+
+    # Ensure shapes are compatible: use first feature if more than one
+    if syn_logits.shape[-1] > 1:
+        syn_logits = syn_logits[..., :1]
+    if syn_target_scalar.dim() == syn_logits.dim() and syn_target_scalar.shape[-1] > 1:
+        syn_target_scalar = syn_target_scalar[..., :1]
+    syn_target_scalar = syn_target_scalar.view_as(syn_logits)
+
+    pred = torch.sigmoid(syn_logits) if apply_sigmoid else syn_logits
+    return F.mse_loss(pred, syn_target_scalar)
+
+
 
 
 def extract_synergy_features(
@@ -214,7 +245,7 @@ def extract_base_features_only(
         feature_indices = synergy_config.get('feature_indices', {})
         if domain in feature_indices:
             n_synergy_features = len(feature_indices[domain])
-            # For model outputs, synergy takes n_features * 8 dims
+            # For model outputs, synergy takes n_features * 8 dims #TODO what does this mean?
             # For targets, synergy takes n_features dims
             # We'll assume the smaller case for safety and let the loss handle dimension checks
             base_dims = tensor.shape[-1] - n_synergy_features
@@ -472,7 +503,7 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                 
                 if encoded:
                     # Fuse
-                    gw_state = model.fuse(encoded, selection_scores={})
+                    gw_state = model.fuse(encoded, selection_scores={}) #TODO I think there might be a massive error here, fuse already applies tanh
                     # Optional post-tanh + noise injection
                     try:
                         noise_cfg = synergy_config.get('noise', {})
@@ -607,73 +638,132 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                                 fusion_loss = fusion_loss + domain_loss
                             num_domains += 1
 
-                    # Add external 'syn' head CE loss using attr target as label source (mixture of direct and broadcast-cycle paths)
+                    # Add external 'syn' head loss using attr target as label source.
+                    # Supports two modes via synergy_config['syn_loss_type']: 'ce' (default) and 'mse'.
                     if synergy_config.get('enable_syn_head', False) and 'attr' in synergy_targets:
                         try:
                             attr_target_full = synergy_targets['attr']
-                            n_bins = int(synergy_config.get('n_bins', 8))
-                            # Build ground-truth target (prefer one-hot tail if present)
-                            if attr_target_full.shape[-1] > 11:
-                                syn_target_raw = attr_target_full[..., 11:]
+                            syn_loss_type = str(synergy_config.get('syn_loss_type', 'ce')).lower()
+                            if syn_loss_type not in ('ce', 'mse'):
+                                syn_loss_type = 'ce'
+
+                            if syn_loss_type == 'ce':
+                                n_bins = int(synergy_config.get('n_bins', 8))
+                                # Build ground-truth target (prefer one-hot tail if present)
+                                if attr_target_full.shape[-1] > 11:
+                                    syn_target_raw = attr_target_full[..., 11:]
+                                else:
+                                    syn_target_raw, _ = extract_synergy_features(
+                                        attr_target_full, 'attr', synergy_config, is_model_output=False, n_synergy_classes=n_bins
+                                    )
+                                # Helper to compute CE from logits vs target (one-hot or scalar)
+                                def ce_from_logits(logits: torch.Tensor) -> torch.Tensor:
+                                    if syn_target_raw.shape[-1] == n_bins:
+                                        target_classes = syn_target_raw.argmax(dim=-1).view(-1)
+                                        logits_reshaped = logits.view(-1, n_bins)
+                                        return torch.nn.functional.cross_entropy(logits_reshaped, target_classes)
+                                    else:
+                                        return calculate_synergy_loss_with_crossentropy(logits, syn_target_raw, n_bins=n_bins)
+
+                                # Direct path CE
+                                syn_direct = None
+                                if 'syn' in decoded:
+                                    syn_direct = ce_from_logits(decoded['syn'])
+
+                                # Broadcast-cycle path: decode base domains -> re-encode -> re-fuse -> syn decode
+                                syn_cycle = None
+                                try:
+                                    re_latents = {}
+                                    if 'attr' in model.gw_decoders and 'attr' in model.gw_encoders:
+                                        attr_base = model.gw_decoders['attr'](gw_state)
+                                        re_latents['attr'] = model.gw_encoders['attr'](attr_base)
+                                    if 'v' in model.gw_decoders and 'v' in model.gw_encoders:
+                                        v_base = model.gw_decoders['v'](gw_state)
+                                        re_latents['v'] = model.gw_encoders['v'](v_base)
+                                    if re_latents:
+                                        gw_state_refused = model.fuse(re_latents, selection_scores={})
+                                        syn_logits_cycle = model.gw_decoders['syn'](gw_state_refused)
+                                        syn_cycle = ce_from_logits(syn_logits_cycle)
+                                except Exception as e:
+                                    logger.warning(f"Failed syn-cycle path: {e}")
+
+                                # Mix according to syn_cycle_ratio
+                                ratio = float(synergy_config.get('syn_cycle_ratio', 0.5))
+                                ratio = max(0.0, min(1.0, ratio))
+                                path_terms = []
+                                if syn_direct is not None and (1.0 - ratio) > 0.0:
+                                    path_terms.append((1.0 - ratio) * syn_direct)
+                                if syn_cycle is not None and ratio > 0.0:
+                                    path_terms.append(ratio * syn_cycle)
+                                if path_terms:
+                                    syn_mixed = sum(path_terms)
+                                    syn_scaled = synergy_loss_scale * syn_mixed
+                                    if fusion_loss is None:
+                                        fusion_loss = syn_scaled
+                                    else:
+                                        fusion_loss = fusion_loss + syn_scaled
+                                    num_domains = max(num_domains, 1)
+                                    # Logging
+                                    if syn_direct is not None:
+                                        loss_details["fusion_syn_direct_ce"] = syn_direct.item()
+                                    if syn_cycle is not None:
+                                        loss_details["fusion_syn_cycle_ce"] = syn_cycle.item()
+                                    loss_details["fusion_syn_mixed_ce_scaled"] = syn_scaled.item()
+                                    loss_details["fusion_syn_cycle_ratio"] = ratio
                             else:
-                                syn_target_raw, _ = extract_synergy_features(
-                                    attr_target_full, 'attr', synergy_config, is_model_output=False, n_synergy_classes=n_bins
+                                # Regression (MSE) mode
+                                # Extract scalar synergy target in [0,1]
+                                syn_target_scalar, _ = extract_synergy_features(
+                                    attr_target_full, 'attr', synergy_config, is_model_output=False
                                 )
-                            # Helper to compute CE from logits vs target (one-hot or scalar)
-                            def ce_from_logits(logits: torch.Tensor) -> torch.Tensor:
-                                if syn_target_raw.shape[-1] == n_bins:
-                                    target_classes = syn_target_raw.argmax(dim=-1).view(-1)
-                                    logits_reshaped = logits.view(-1, n_bins)
-                                    return torch.nn.functional.cross_entropy(logits_reshaped, target_classes)
-                                else:
-                                    return calculate_synergy_loss_with_crossentropy(logits, syn_target_raw, n_bins=n_bins)
+                                if syn_target_scalar.numel() == 0:
+                                    # Fallback if no feature_indices provided: assume last dim is target
+                                    syn_target_scalar = attr_target_full[..., -1:]
 
-                            # Direct path CE
-                            syn_ce_direct = None
-                            if 'syn' in decoded:
-                                syn_ce_direct = ce_from_logits(decoded['syn'])
+                                def mse_from_logits(logits: torch.Tensor) -> torch.Tensor:
+                                    return mse_loss_syn(logits, syn_target_scalar, apply_sigmoid=True)
 
-                            # Broadcast-cycle path: decode base domains -> re-encode -> re-fuse -> syn decode
-                            syn_ce_cycle = None
-                            try:
-                                # Decode base domains from the same gw_state (NO additional noise here)
-                                re_latents = {}
-                                if 'attr' in model.gw_decoders and 'attr' in model.gw_encoders:
-                                    attr_base = model.gw_decoders['attr'](gw_state)
-                                    re_latents['attr'] = model.gw_encoders['attr'](attr_base)
-                                if 'v' in model.gw_decoders and 'v' in model.gw_encoders:
-                                    v_base = model.gw_decoders['v'](gw_state)
-                                    re_latents['v'] = model.gw_encoders['v'](v_base)
-                                if re_latents:
-                                    gw_state_refused = model.fuse(re_latents, selection_scores={})
-                                    syn_logits_cycle = model.gw_decoders['syn'](gw_state_refused)
-                                    syn_ce_cycle = ce_from_logits(syn_logits_cycle)
-                            except Exception as e:
-                                logger.warning(f"Failed syn-cycle path: {e}")
+                                syn_direct = None
+                                if 'syn' in decoded:
+                                    syn_direct = mse_from_logits(decoded['syn'])
 
-                            # Mix according to syn_cycle_ratio
-                            ratio = float(synergy_config.get('syn_cycle_ratio', 0.5))
-                            ratio = max(0.0, min(1.0, ratio))
-                            path_terms = []
-                            if syn_ce_direct is not None and (1.0 - ratio) > 0.0:
-                                path_terms.append((1.0 - ratio) * syn_ce_direct)
-                            if syn_ce_cycle is not None and ratio > 0.0:
-                                path_terms.append(ratio * syn_ce_cycle)
-                            if path_terms:
-                                syn_ce_mixed = sum(path_terms)
-                                scaled_syn_ce = synergy_loss_scale * syn_ce_mixed
-                                if fusion_loss is None:
-                                    fusion_loss = scaled_syn_ce
-                                else:
-                                    fusion_loss = fusion_loss + scaled_syn_ce
-                                num_domains = max(num_domains, 1)
-                                # Logging
-                                if syn_ce_direct is not None:
-                                    loss_details["fusion_syn_direct_ce"] = syn_ce_direct.item()
-                                if syn_ce_cycle is not None:
-                                    loss_details["fusion_syn_cycle_ce"] = syn_ce_cycle.item()
-                                loss_details["fusion_syn_mixed_ce_scaled"] = scaled_syn_ce.item()
-                                loss_details["fusion_syn_cycle_ratio"] = ratio
+                                syn_cycle = None
+                                try:
+                                    re_latents = {}
+                                    if 'attr' in model.gw_decoders and 'attr' in model.gw_encoders:
+                                        attr_base = model.gw_decoders['attr'](gw_state)
+                                        re_latents['attr'] = model.gw_encoders['attr'](attr_base)
+                                    if 'v' in model.gw_decoders and 'v' in model.gw_encoders:
+                                        v_base = model.gw_decoders['v'](gw_state)
+                                        re_latents['v'] = model.gw_encoders['v'](v_base)
+                                    if re_latents:
+                                        gw_state_refused = model.fuse(re_latents, selection_scores={})
+                                        syn_logits_cycle = model.gw_decoders['syn'](gw_state_refused)
+                                        syn_cycle = mse_from_logits(syn_logits_cycle)
+                                except Exception as e:
+                                    logger.warning(f"Failed syn-cycle path (mse): {e}")
+
+                                ratio = float(synergy_config.get('syn_cycle_ratio', 0.5))
+                                ratio = max(0.0, min(1.0, ratio))
+                                path_terms = []
+                                if syn_direct is not None and (1.0 - ratio) > 0.0:
+                                    path_terms.append((1.0 - ratio) * syn_direct)
+                                if syn_cycle is not None and ratio > 0.0:
+                                    path_terms.append(ratio * syn_cycle)
+                                if path_terms:
+                                    syn_mixed = sum(path_terms)
+                                    syn_scaled = synergy_loss_scale * syn_mixed
+                                    if fusion_loss is None:
+                                        fusion_loss = syn_scaled
+                                    else:
+                                        fusion_loss = fusion_loss + syn_scaled
+                                    num_domains = max(num_domains, 1)
+                                    if syn_direct is not None:
+                                        loss_details["fusion_syn_direct_mse"] = syn_direct.item()
+                                    if syn_cycle is not None:
+                                        loss_details["fusion_syn_cycle_mse"] = syn_cycle.item()
+                                    loss_details["fusion_syn_mixed_mse_scaled"] = syn_scaled.item()
+                                    loss_details["fusion_syn_cycle_ratio"] = ratio
                         except Exception as e:
                             logger.warning(f"Failed to compute 'syn' head mixed CE loss: {e}")
                     
@@ -690,23 +780,37 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                         total_loss = weighted_fusion_loss
             
             # Helper to temporarily monkey-patch model.fuse to inject noise post-fusion (single injection only)
-            def _monkey_patch_fuse_with_noise(model, synergy_config):
+            def _monkey_patch_fuse_with_noise(model, synergy_config, site='post_fusion_pre_tanh'):
                 original_fuse = getattr(model, 'fuse', None)
                 if original_fuse is None:
                     return None
                 noise_cfg = synergy_config.get('noise', {})
-                site = noise_cfg.get('site', 'post_fusion_post_tanh')
+                site = noise_cfg.get('site', site)  # Use the site parameter, defaulting to pre-tanh
                 train_std = float(noise_cfg.get('train_std', 0.0))
 
-                def noisy_fuse(encoded, selection_scores=None):
+                def noisy_fuse_after_tanh(encoded, selection_scores=None):
                     gw_state_inner = original_fuse(encoded, selection_scores)
-                    if 'post_tanh' in str(site):
-                        gw_state_inner = torch.tanh(gw_state_inner)
                     if train_std and train_std > 0.0:
                         gw_state_inner = gw_state_inner + train_std * torch.randn_like(gw_state_inner)
                     return gw_state_inner
 
-                model.fuse = noisy_fuse
+                def noisy_fuse_before_tanh(encoded, selection_scores=None, site='post_fusion_pre_tanh'): #TODO might want to check this function again if persistent problems
+                    weighted_sum = torch.zeros_like(list(encoded.values())[0])
+                    for domain, representation in encoded.items():
+                        if domain in model.fusion_weights:
+                            weight = model.fusion_weights[domain]
+                            weighted_sum += weight * representation
+                    if train_std and train_std > 0.0:
+                        weighted_sum = weighted_sum + train_std * torch.randn_like(weighted_sum)
+                    return model.fusion_activation_fn(weighted_sum)
+
+                if site == 'post_fusion_post_tanh':
+                    model.fuse = noisy_fuse_after_tanh
+                elif site == 'post_fusion_pre_tanh':
+                    model.fuse = noisy_fuse_before_tanh
+                else:
+                    raise ValueError(f"Invalid site: {site}")
+
                 return original_fuse
 
             # 2. Demi-cycle and cycle losses - ignore synergy features entirely

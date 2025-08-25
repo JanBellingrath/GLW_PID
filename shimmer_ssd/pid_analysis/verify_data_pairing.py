@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+`#!/usr/bin/env python3
 """
 Verify Data Pairing in Synergy Dataset
 
