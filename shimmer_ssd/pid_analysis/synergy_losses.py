@@ -673,17 +673,32 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                                 # Broadcast-cycle path: decode base domains -> re-encode -> re-fuse -> syn decode
                                 syn_cycle = None
                                 try:
-                                    re_latents = {}
-                                    if 'attr' in model.gw_decoders and 'attr' in model.gw_encoders:
-                                        attr_base = model.gw_decoders['attr'](gw_state)
-                                        re_latents['attr'] = model.gw_encoders['attr'](attr_base)
-                                    if 'v' in model.gw_decoders and 'v' in model.gw_encoders:
-                                        v_base = model.gw_decoders['v'](gw_state)
-                                        re_latents['v'] = model.gw_encoders['v'](v_base)
-                                    if re_latents:
-                                        gw_state_refused = model.fuse(re_latents, selection_scores={})
-                                        syn_logits_cycle = model.gw_decoders['syn'](gw_state_refused)
-                                        syn_cycle = ce_from_logits(syn_logits_cycle)
+                                    use_broadcast = bool(getattr(model, 'broadcast_gw_decoders', None) is not None and synergy_config.get('broadcast', {}).get('use_separate_modules', False))
+                                    if use_broadcast:
+                                        with torch.no_grad():
+                                            re_latents = {}
+                                            if 'attr' in model.broadcast_gw_decoders and 'attr' in model.broadcast_gw_encoders:
+                                                attr_base = model.broadcast_gw_decoders['attr'](gw_state)
+                                                re_latents['attr'] = model.broadcast_gw_encoders['attr'](attr_base)
+                                            if 'v' in model.broadcast_gw_decoders and 'v' in model.broadcast_gw_encoders:
+                                                v_base = model.broadcast_gw_decoders['v'](gw_state)
+                                                re_latents['v'] = model.broadcast_gw_encoders['v'](v_base)
+                                            if re_latents:
+                                                gw_state_refused = model.fuse(re_latents, selection_scores={})
+                                                syn_logits_cycle = model.gw_decoders['syn'](gw_state_refused)
+                                                syn_cycle = ce_from_logits(syn_logits_cycle)
+                                    else:
+                                        re_latents = {}
+                                        if 'attr' in model.gw_decoders and 'attr' in model.gw_encoders:
+                                            attr_base = model.gw_decoders['attr'](gw_state)
+                                            re_latents['attr'] = model.gw_encoders['attr'](attr_base)
+                                        if 'v' in model.gw_decoders and 'v' in model.gw_encoders:
+                                            v_base = model.gw_decoders['v'](gw_state)
+                                            re_latents['v'] = model.gw_encoders['v'](v_base)
+                                        if re_latents:
+                                            gw_state_refused = model.fuse(re_latents, selection_scores={})
+                                            syn_logits_cycle = model.gw_decoders['syn'](gw_state_refused)
+                                            syn_cycle = ce_from_logits(syn_logits_cycle)
                                 except Exception as e:
                                     logger.warning(f"Failed syn-cycle path: {e}")
 
@@ -729,17 +744,32 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
 
                                 syn_cycle = None
                                 try:
-                                    re_latents = {}
-                                    if 'attr' in model.gw_decoders and 'attr' in model.gw_encoders:
-                                        attr_base = model.gw_decoders['attr'](gw_state)
-                                        re_latents['attr'] = model.gw_encoders['attr'](attr_base)
-                                    if 'v' in model.gw_decoders and 'v' in model.gw_encoders:
-                                        v_base = model.gw_decoders['v'](gw_state)
-                                        re_latents['v'] = model.gw_encoders['v'](v_base)
-                                    if re_latents:
-                                        gw_state_refused = model.fuse(re_latents, selection_scores={})
-                                        syn_logits_cycle = model.gw_decoders['syn'](gw_state_refused)
-                                        syn_cycle = mse_from_logits(syn_logits_cycle)
+                                    use_broadcast = bool(getattr(model, 'broadcast_gw_decoders', None) is not None and synergy_config.get('broadcast', {}).get('use_separate_modules', False))
+                                    if use_broadcast:
+                                        with torch.no_grad():
+                                            re_latents = {}
+                                            if 'attr' in model.broadcast_gw_decoders and 'attr' in model.broadcast_gw_encoders:
+                                                attr_base = model.broadcast_gw_decoders['attr'](gw_state)
+                                                re_latents['attr'] = model.broadcast_gw_encoders['attr'](attr_base)
+                                            if 'v' in model.broadcast_gw_decoders and 'v' in model.broadcast_gw_encoders:
+                                                v_base = model.broadcast_gw_decoders['v'](gw_state)
+                                                re_latents['v'] = model.broadcast_gw_encoders['v'](v_base)
+                                            if re_latents:
+                                                gw_state_refused = model.fuse(re_latents, selection_scores={})
+                                                syn_logits_cycle = model.gw_decoders['syn'](gw_state_refused)
+                                                syn_cycle = mse_from_logits(syn_logits_cycle)
+                                    else:
+                                        re_latents = {}
+                                        if 'attr' in model.gw_decoders and 'attr' in model.gw_encoders:
+                                            attr_base = model.gw_decoders['attr'](gw_state)
+                                            re_latents['attr'] = model.gw_encoders['attr'](attr_base)
+                                        if 'v' in model.gw_decoders and 'v' in model.gw_encoders:
+                                            v_base = model.gw_decoders['v'](gw_state)
+                                            re_latents['v'] = model.gw_encoders['v'](v_base)
+                                        if re_latents:
+                                            gw_state_refused = model.fuse(re_latents, selection_scores={})
+                                            syn_logits_cycle = model.gw_decoders['syn'](gw_state_refused)
+                                            syn_cycle = mse_from_logits(syn_logits_cycle)
                                 except Exception as e:
                                     logger.warning(f"Failed syn-cycle path (mse): {e}")
 
@@ -894,12 +924,22 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                             gw_noisy = gw_noisy + std * torch.randn_like(gw_noisy)
                         # 3) Decode to base domains, re-encode, and re-fuse
                         re_latents = {}
-                        if 'attr' in model.gw_decoders and 'attr' in model.gw_encoders:
-                            attr_base = model.gw_decoders['attr'](gw_noisy)
-                            re_latents['attr'] = model.gw_encoders['attr'](attr_base)
-                        if 'v' in model.gw_decoders and 'v' in model.gw_encoders:
-                            v_base = model.gw_decoders['v'](gw_noisy)
-                            re_latents['v'] = model.gw_encoders['v'](v_base)
+                        use_broadcast = bool(getattr(model, 'broadcast_gw_decoders', None) is not None and synergy_config.get('broadcast', {}).get('use_separate_modules', False))
+                        if use_broadcast:
+                            # Use broadcast-only decoders/encoders for denoising demi-cycle (they get trained here)
+                            if 'attr' in model.broadcast_gw_decoders and 'attr' in model.broadcast_gw_encoders:
+                                attr_base = model.broadcast_gw_decoders['attr'](gw_noisy)
+                                re_latents['attr'] = model.broadcast_gw_encoders['attr'](attr_base)
+                            if 'v' in model.broadcast_gw_decoders and 'v' in model.broadcast_gw_encoders:
+                                v_base = model.broadcast_gw_decoders['v'](gw_noisy)
+                                re_latents['v'] = model.broadcast_gw_encoders['v'](v_base)
+                        else:
+                            if 'attr' in model.gw_decoders and 'attr' in model.gw_encoders:
+                                attr_base = model.gw_decoders['attr'](gw_noisy)
+                                re_latents['attr'] = model.gw_encoders['attr'](attr_base)
+                            if 'v' in model.gw_decoders and 'v' in model.gw_encoders:
+                                v_base = model.gw_decoders['v'](gw_noisy)
+                                re_latents['v'] = model.gw_encoders['v'](v_base)
                         if re_latents:
                             gw_refused = model.fuse(re_latents, selection_scores={})
                             # 4) MSE between gw_refused and gw_target (denoising objective)

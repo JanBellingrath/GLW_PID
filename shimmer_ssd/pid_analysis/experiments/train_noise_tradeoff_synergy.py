@@ -63,6 +63,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--decoder-hidden-dim", type=int, default=None, help="Override decoder hidden width")
     parser.add_argument("--demi-cycle-style", type=str, default=None, choices=["encode_decode", "decode_encode", "auto"], help="Demi-cycle style or auto schedule-switch")
     parser.add_argument("--experiment-name", type=str, default="fusion_only", help="Which loss config to run (must exist in config)")
+    # Broadcast-only modules
+    parser.add_argument("--use-broadcast-modules", action="store_true", help="Use separate broadcast-only encoders/decoders for demi-cycle denoising")
+    parser.add_argument("--broadcast-hidden-dim", type=int, default=None, help="Hidden dim for broadcast-only modules")
+    parser.add_argument("--broadcast-n-layers", type=int, default=None, help="Number of layers for broadcast-only modules")
+    parser.add_argument("--eval-use-broadcast-cycle", action="store_true", help="At eval, use broadcast-only modules for the cycle path")
     return parser.parse_args()
 
 
@@ -96,6 +101,19 @@ def apply_overrides(config: SynergyExperimentConfig, args: argparse.Namespace) -
     # Restrict to a single experiment if provided
     if args.experiment_name:
         config.loss_configs = [cfg for cfg in config.loss_configs if cfg['name'] == args.experiment_name]
+    # Broadcast-only overrides
+    if args.use_broadcast_modules:
+        config.synergy_config.setdefault('broadcast', {})
+        config.synergy_config['broadcast']['use_separate_modules'] = True
+    if args.broadcast_hidden_dim is not None:
+        config.synergy_config.setdefault('broadcast', {})
+        config.synergy_config['broadcast']['hidden_dim'] = int(args.broadcast_hidden_dim)
+    if args.broadcast_n_layers is not None:
+        config.synergy_config.setdefault('broadcast', {})
+        config.synergy_config['broadcast']['n_layers'] = int(args.broadcast_n_layers)
+    if args.eval_use_broadcast_cycle:
+        config.synergy_config.setdefault('broadcast', {})
+        config.synergy_config['broadcast']['eval_use_broadcast'] = True
 
 
 @torch.no_grad()
@@ -165,19 +183,25 @@ def evaluate_tradeoff(trainer: SynergyTrainer, eval_noise_stds: List[float], pat
                 syn_logits_direct = model.gw_decoders['syn'](gw_state_noisy)
 
             if path_mode in ('both', 'cycle'):
-                decoded_attr = model.gw_decoders['attr'](gw_state_noisy) if 'attr' in model.gw_decoders else None
-                decoded_v = model.gw_decoders['v'](gw_state_noisy) if 'v' in model.gw_decoders else None
-
-                re_latents = {}
-                if decoded_attr is not None and 'attr' in model.gw_encoders:
-                    re_latents['attr'] = model.gw_encoders['attr'](decoded_attr)
-                if decoded_v is not None and 'v' in model.gw_encoders:
-                    re_latents['v'] = model.gw_encoders['v'](decoded_v)
-
-                if not re_latents:
-                    # If no cycle path possible, skip cycle for this batch
-                    pass
+                use_broadcast = bool(getattr(model, 'broadcast_gw_decoders', None) is not None and trainer.config.synergy_config.get('broadcast', {}).get('eval_use_broadcast', False))
+                if use_broadcast:
+                    decoded_attr = model.broadcast_gw_decoders['attr'](gw_state_noisy) if hasattr(model, 'broadcast_gw_decoders') and 'attr' in model.broadcast_gw_decoders else None
+                    decoded_v = model.broadcast_gw_decoders['v'](gw_state_noisy) if hasattr(model, 'broadcast_gw_decoders') and 'v' in model.broadcast_gw_decoders else None
+                    re_latents = {}
+                    if decoded_attr is not None and hasattr(model, 'broadcast_gw_encoders') and 'attr' in model.broadcast_gw_encoders:
+                        re_latents['attr'] = model.broadcast_gw_encoders['attr'](decoded_attr)
+                    if decoded_v is not None and hasattr(model, 'broadcast_gw_encoders') and 'v' in model.broadcast_gw_encoders:
+                        re_latents['v'] = model.broadcast_gw_encoders['v'](decoded_v)
                 else:
+                    decoded_attr = model.gw_decoders['attr'](gw_state_noisy) if 'attr' in model.gw_decoders else None
+                    decoded_v = model.gw_decoders['v'](gw_state_noisy) if 'v' in model.gw_decoders else None
+                    re_latents = {}
+                    if decoded_attr is not None and 'attr' in model.gw_encoders:
+                        re_latents['attr'] = model.gw_encoders['attr'](decoded_attr)
+                    if decoded_v is not None and 'v' in model.gw_encoders:
+                        re_latents['v'] = model.gw_encoders['v'](decoded_v)
+
+                if re_latents:
                     gw_state_refused = model.fuse(re_latents, selection_scores={})
                     syn_logits_cycle = model.gw_decoders['syn'](gw_state_refused)
 

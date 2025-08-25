@@ -74,6 +74,11 @@ def parse_args() -> argparse.Namespace:
                         help="When syn-training-style is 'separate', optionally run only one variant")
     parser.add_argument("--wandb-group", type=str, default="train-noise-sweep", help="W&B group for this sweep")
     parser.add_argument("--syn-loss-type", type=str, default=None, choices=["ce", "mse"], help="Loss type for syn head: ce or mse")
+    # Broadcast-only modules
+    parser.add_argument("--use-broadcast-modules", action="store_true", help="Use separate broadcast-only encoders/decoders for demi-cycle denoising")
+    parser.add_argument("--broadcast-hidden-dim", type=int, default=None, help="Hidden dim for broadcast-only modules")
+    parser.add_argument("--broadcast-n-layers", type=int, default=None, help="Number of layers for broadcast-only modules")
+    parser.add_argument("--eval-use-broadcast-cycle", action="store_true", help="At eval, use broadcast-only modules for the cycle path")
     return parser.parse_args()
 
 
@@ -143,6 +148,18 @@ def main():
             run_config.synergy_config['syn_cycle_ratio'] = ratio
         if args.syn_loss_type is not None:
             run_config.synergy_config['syn_loss_type'] = str(args.syn_loss_type)
+        if args.use_broadcast_modules:
+            run_config.synergy_config.setdefault('broadcast', {})
+            run_config.synergy_config['broadcast']['use_separate_modules'] = True
+        if args.broadcast_hidden_dim is not None:
+            run_config.synergy_config.setdefault('broadcast', {})
+            run_config.synergy_config['broadcast']['hidden_dim'] = int(args.broadcast_hidden_dim)
+        if args.broadcast_n_layers is not None:
+            run_config.synergy_config.setdefault('broadcast', {})
+            run_config.synergy_config['broadcast']['n_layers'] = int(args.broadcast_n_layers)
+        if args.eval_use_broadcast_cycle:
+            run_config.synergy_config.setdefault('broadcast', {})
+            run_config.synergy_config['broadcast']['eval_use_broadcast'] = True
         # Noise: configure train_std for training branch; eval-only path will ignore
         run_config.synergy_config.setdefault('noise', {})
         run_config.synergy_config['noise']['train_std'] = float(train_std)
@@ -176,6 +193,18 @@ def main():
                 var_config.synergy_config['attr_includes_synergy'] = False
             if args.syn_loss_type is not None:
                 var_config.synergy_config['syn_loss_type'] = str(args.syn_loss_type)
+            if args.use_broadcast_modules:
+                var_config.synergy_config.setdefault('broadcast', {})
+                var_config.synergy_config['broadcast']['use_separate_modules'] = True
+            if args.broadcast_hidden_dim is not None:
+                var_config.synergy_config.setdefault('broadcast', {})
+                var_config.synergy_config['broadcast']['hidden_dim'] = int(args.broadcast_hidden_dim)
+            if args.broadcast_n_layers is not None:
+                var_config.synergy_config.setdefault('broadcast', {})
+                var_config.synergy_config['broadcast']['n_layers'] = int(args.broadcast_n_layers)
+            if args.eval_use_broadcast_cycle:
+                var_config.synergy_config.setdefault('broadcast', {})
+                var_config.synergy_config['broadcast']['eval_use_broadcast'] = True
             if args.syn_cycle_ratio is not None and args.syn_training_style != 'separate':
                 var_config.synergy_config['syn_cycle_ratio'] = max(0.0, min(1.0, float(args.syn_cycle_ratio)))
             # For separate, force ratio

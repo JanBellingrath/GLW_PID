@@ -112,6 +112,12 @@ class SynergyExperimentConfig:
         self.synergy_config.setdefault('syn_loss_type', 'ce')
         # Demi-cycle style: 'encode_decode' (default) or 'decode_encode' (denoising)
         self.synergy_config.setdefault('demi_cycle_style', 'encode_decode')
+        # Broadcast-only modules for decode->encode demi-cycle denoising and optional eval cycle
+        self.synergy_config.setdefault('broadcast', {})
+        self.synergy_config['broadcast'].setdefault('use_separate_modules', False)
+        self.synergy_config['broadcast'].setdefault('hidden_dim', self.hidden_dim)
+        self.synergy_config['broadcast'].setdefault('n_layers', self.n_layers)
+        self.synergy_config['broadcast'].setdefault('eval_use_broadcast', False)
         
         # Add synergy loss scale if not present
         if 'loss_scale' not in self.synergy_config:
@@ -336,6 +342,55 @@ class SynergyTrainer:
         # Store architecture parameters
         gw_module.hidden_dim = self.config.hidden_dim
         gw_module.n_layers = self.config.n_layers
+
+        # Optionally attach broadcast-only encoders/decoders used only for demi-cycle denoising (and optional eval cycle)
+        try:
+            use_broadcast = bool(self.config.synergy_config.get('broadcast', {}).get('use_separate_modules', False))
+        except Exception:
+            use_broadcast = False
+        if use_broadcast:
+            import torch.nn as nn  # ensure nn is in scope
+            broadcast_hidden = int(self.config.synergy_config['broadcast'].get('hidden_dim', self.config.hidden_dim))
+            broadcast_layers = int(self.config.synergy_config['broadcast'].get('n_layers', self.config.n_layers))
+            broadcast_decoders = {}
+            broadcast_encoders = {}
+            # attr base dims = 11, v base dims = 13
+            for domain_name in gw_encoders.keys():
+                if domain_name == 'attr':
+                    in_dim = self.config.workspace_dim
+                    out_dim = 11
+                    # Decoder: workspace -> base domain
+                    broadcast_decoders[domain_name] = GWDecoder(
+                        in_dim=in_dim,
+                        hidden_dim=broadcast_hidden,
+                        out_dim=out_dim,
+                        n_layers=broadcast_layers,
+                    )
+                    # Encoder: base domain -> workspace
+                    broadcast_encoders[domain_name] = GWEncoder(
+                        in_dim=out_dim,
+                        hidden_dim=broadcast_hidden,
+                        out_dim=self.config.workspace_dim,
+                        n_layers=broadcast_layers,
+                    )
+                elif domain_name == 'v':
+                    in_dim = self.config.workspace_dim
+                    out_dim = 13
+                    broadcast_decoders[domain_name] = GWDecoder(
+                        in_dim=in_dim,
+                        hidden_dim=broadcast_hidden,
+                        out_dim=out_dim,
+                        n_layers=broadcast_layers,
+                    )
+                    broadcast_encoders[domain_name] = GWEncoder(
+                        in_dim=out_dim,
+                        hidden_dim=broadcast_hidden,
+                        out_dim=self.config.workspace_dim,
+                        n_layers=broadcast_layers,
+                    )
+            # Register as submodules
+            gw_module.broadcast_gw_decoders = nn.ModuleDict(broadcast_decoders)
+            gw_module.broadcast_gw_encoders = nn.ModuleDict(broadcast_encoders)
 
         # Freeze domain modules
         for domain_name, domain_module in domain_modules.items():
@@ -861,6 +916,11 @@ Example usage:
     parser.add_argument("--syn-head-n-layers", type=int, default=None, help="Number of layers for syn decoder head (default: 3)")
     parser.add_argument("--syn-cycle-ratio", type=float, default=None, help="Weight for syn CE via broadcast-cycle (0..1), remainder on direct path (default: 0.5)")
     parser.add_argument("--demi-cycle-style", type=str, default=None, choices=["encode_decode", "decode_encode"], help="Demi-cycle style: encode_decode (default) or decode_encode (denoising)")
+    # Broadcast-only modules
+    parser.add_argument("--use-broadcast-modules", action="store_true", help="Use separate broadcast-only encoders/decoders for demi-cycle denoising")
+    parser.add_argument("--broadcast-hidden-dim", type=int, default=None, help="Hidden dim for broadcast-only modules")
+    parser.add_argument("--broadcast-n-layers", type=int, default=None, help="Number of layers for broadcast-only modules")
+    parser.add_argument("--eval-use-broadcast-cycle", action="store_true", help="At eval, use broadcast-only modules for the cycle path")
     parser.add_argument("--syn-loss-type", type=str, default=None, choices=["ce", "mse"], help="Loss type for syn head: ce (default) or mse (regression)")
     
     args = parser.parse_args()
@@ -943,6 +1003,23 @@ Example usage:
     if args.batch_size:
         config.batch_size = args.batch_size
         logger.info(f"Override batch size: {args.batch_size}")
+    # Broadcast-only overrides
+    if args.use_broadcast_modules:
+        config.synergy_config.setdefault('broadcast', {})
+        config.synergy_config['broadcast']['use_separate_modules'] = True
+        logger.info("Enable broadcast-only modules: True")
+    if args.broadcast_hidden_dim is not None:
+        config.synergy_config.setdefault('broadcast', {})
+        config.synergy_config['broadcast']['hidden_dim'] = int(args.broadcast_hidden_dim)
+        logger.info(f"Override broadcast hidden_dim: {args.broadcast_hidden_dim}")
+    if args.broadcast_n_layers is not None:
+        config.synergy_config.setdefault('broadcast', {})
+        config.synergy_config['broadcast']['n_layers'] = int(args.broadcast_n_layers)
+        logger.info(f"Override broadcast n_layers: {args.broadcast_n_layers}")
+    if args.eval_use_broadcast_cycle:
+        config.synergy_config.setdefault('broadcast', {})
+        config.synergy_config['broadcast']['eval_use_broadcast'] = True
+        logger.info("Eval will use broadcast-only modules for cycle path")
     
     # Set device
     device = None
