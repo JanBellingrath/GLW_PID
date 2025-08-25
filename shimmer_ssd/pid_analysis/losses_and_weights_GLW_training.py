@@ -11,9 +11,15 @@ from collections import defaultdict
 
 # Add path setup for shimmer imports
 import sys
-shimmer_ssd_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'shimmer-ssd'))
-if shimmer_ssd_root not in sys.path:
-    sys.path.insert(0, shimmer_ssd_root)
+current_dir = os.path.dirname(os.path.abspath(__file__))
+repo_root_candidate = os.path.abspath(os.path.join(current_dir, '..'))
+shimmer_pkg_candidate = os.path.join(repo_root_candidate, 'shimmer-ssd')
+
+# Prefer the top-level /home/janerik/GLW_PID/shimmer-ssd if it exists
+top_level_shimmer = os.path.abspath(os.path.join(current_dir, '..', '..', '..', 'shimmer-ssd'))
+for candidate in [top_level_shimmer, shimmer_pkg_candidate]:
+    if os.path.isdir(candidate) and candidate not in sys.path:
+        sys.path.insert(0, candidate)
 
 from shimmer.modules.domain import DomainModule
 from shimmer.modules.gw_module import GWModule, GWEncoder, GWDecoder, LatentsDomainGroupT

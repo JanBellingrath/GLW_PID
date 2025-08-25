@@ -106,6 +106,10 @@ class SynergyExperimentConfig:
         self.synergy_config.setdefault('enable_syn_head', False)
         self.synergy_config.setdefault('n_bins', 8)
         self.synergy_config.setdefault('syn_head_n_layers', 3)
+        # Ratio for training syn CE via broadcast-cycle vs direct (default 0.5)
+        self.synergy_config.setdefault('syn_cycle_ratio', 0.5)
+        # Demi-cycle style: 'encode_decode' (default) or 'decode_encode' (denoising)
+        self.synergy_config.setdefault('demi_cycle_style', 'encode_decode')
         
         # Add synergy loss scale if not present
         if 'loss_scale' not in self.synergy_config:
@@ -600,6 +604,12 @@ class SynergyTrainer:
         
         try:
             # Use existing train_model function - this reuses all existing training infrastructure!
+            # Expose epoch scheduling info to the model for epoch-based schedules
+            try:
+                setattr(self.model, 'current_epoch', 0)
+                setattr(self.model, 'total_epochs', int(epochs))
+            except Exception:
+                pass
             trained_model, final_checkpoint = train_model(
                 model=self.model,
                 train_data_loader=train_loader,
@@ -833,6 +843,7 @@ Example usage:
     parser.add_argument("--gpu-memory-percent", type=float, default=100.0, help="GPU memory usage limit as percentage of total GPU memory (default: 25.0 for 10GB/40GB)")
     parser.add_argument("--workspace-dim", type=int, default=None, help="Override workspace dimension (GLW latent)")
     parser.add_argument("--decoder-hidden-dim", type=int, default=None, help="Override decoder hidden width")
+    parser.add_argument("--hidden-dim", type=int, default=None, help="Override encoder hidden width")
     # New options for noise and synergy head
     parser.add_argument("--enable-syn-head", action="store_true", help="Enable third 'syn' decoder head for synergy classification")
     parser.add_argument("--disable-attr-synergy", action="store_true", help="Do not include synergy logits on attr decoder output")
@@ -841,6 +852,8 @@ Example usage:
     parser.add_argument("--noise-site", type=str, default=None, help="Noise injection site identifier (default: post_fusion_post_tanh)")
     parser.add_argument("--synergy-bins", type=int, default=None, help="Number of discrete synergy bins (default: 8)")
     parser.add_argument("--syn-head-n-layers", type=int, default=None, help="Number of layers for syn decoder head (default: 3)")
+    parser.add_argument("--syn-cycle-ratio", type=float, default=None, help="Weight for syn CE via broadcast-cycle (0..1), remainder on direct path (default: 0.5)")
+    parser.add_argument("--demi-cycle-style", type=str, default=None, choices=["encode_decode", "decode_encode"], help="Demi-cycle style: encode_decode (default) or decode_encode (denoising)")
     
     args = parser.parse_args()
     
@@ -877,6 +890,9 @@ Example usage:
     if args.decoder_hidden_dim:
         config.decoder_hidden_dim = int(args.decoder_hidden_dim)
         logger.info(f"Override decoder_hidden_dim: {config.decoder_hidden_dim}")
+    if args.hidden_dim:
+        config.hidden_dim = int(args.hidden_dim)
+        logger.info(f"Override hidden_dim: {config.hidden_dim}")
     if args.synergy_loss_scale:
         config.synergy_config['loss_scale'] = args.synergy_loss_scale
         logger.info(f"Override synergy loss scale: {args.synergy_loss_scale}")
@@ -905,6 +921,14 @@ Example usage:
     if args.syn_head_n_layers is not None:
         config.synergy_config['syn_head_n_layers'] = int(args.syn_head_n_layers)
         logger.info(f"Override syn head n_layers: {args.syn_head_n_layers}")
+    if args.syn_cycle_ratio is not None:
+        # Clamp to [0,1]
+        ratio = max(0.0, min(1.0, float(args.syn_cycle_ratio)))
+        config.synergy_config['syn_cycle_ratio'] = ratio
+        logger.info(f"Override syn_cycle_ratio: {ratio}")
+    if args.demi_cycle_style is not None:
+        config.synergy_config['demi_cycle_style'] = str(args.demi_cycle_style)
+        logger.info(f"Override demi_cycle_style: {args.demi_cycle_style}")
     if args.batch_size:
         config.batch_size = args.batch_size
         logger.info(f"Override batch size: {args.batch_size}")
