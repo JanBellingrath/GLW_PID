@@ -119,6 +119,12 @@ class SynergyExperimentConfig:
         self.synergy_config['broadcast'].setdefault('hidden_dim', self.hidden_dim)
         self.synergy_config['broadcast'].setdefault('n_layers', self.n_layers)
         self.synergy_config['broadcast'].setdefault('eval_use_broadcast', False)
+        # Two-stage syn training: pretrain system, then train syn head only
+        self.synergy_config.setdefault('syn_two_stage', {})
+        self.synergy_config['syn_two_stage'].setdefault('enabled', False)
+        self.synergy_config['syn_two_stage'].setdefault('pretrain_epochs', 0)
+        self.synergy_config['syn_two_stage'].setdefault('finetune_epochs', 0)
+        self.synergy_config.setdefault('syn_train_enabled', True)
         
         # Add synergy loss scale if not present
         if 'loss_scale' not in self.synergy_config:
@@ -766,14 +772,67 @@ class SynergyTrainer:
             if self.config.training.get('reset_model_per_experiment', False):
                 self.setup_model()
             
-            # Run experiment
-            result = self.run_experiment(
-                loss_config=loss_config,
-                log_to_wandb=self.config.experiment.get('log_to_wandb', True)
-            )
+            # Optional two-stage: pretrain system without syn head training, then train syn only
+            two_stage = self.config.synergy_config.get('syn_two_stage', {}).get('enabled', False)
+            pretrain_epochs = int(self.config.synergy_config.get('syn_two_stage', {}).get('pretrain_epochs', 0))
+            finetune_epochs = int(self.config.synergy_config.get('syn_two_stage', {}).get('finetune_epochs', 0))
+            base_epochs = loss_config.get('epochs', self.config.training.get('epochs', 50))
             
-            results.append(result)
-        
+            if two_stage and pretrain_epochs > 0:
+                logger.info(f"Two-stage: Pretraining system for {pretrain_epochs} epochs without syn head training")
+                # Disable syn training in loss function
+                self.config.synergy_config['syn_train_enabled'] = False
+                # Freeze syn decoder params (if present)
+                if hasattr(self.model, 'gw_decoders') and 'syn' in self.model.gw_decoders:
+                    for p in self.model.gw_decoders['syn'].parameters():
+                        p.requires_grad = False
+                # Run pretrain stage
+                pretrain_cfg = dict(loss_config)
+                pretrain_cfg['name'] = f"{loss_config['name']}_pretrain"
+                pretrain_cfg['weights'] = loss_config['weights']
+                pretrain_cfg['epochs'] = pretrain_epochs
+                result = self.run_experiment(loss_config=pretrain_cfg, log_to_wandb=self.config.experiment.get('log_to_wandb', True))
+                results.append(result)
+            
+            if two_stage and finetune_epochs > 0:
+                logger.info(f"Two-stage: Fine-tuning syn head for {finetune_epochs} epochs with system frozen")
+                # Enable syn training in loss
+                self.config.synergy_config['syn_train_enabled'] = True
+                # Freeze system (all except syn decoder)
+                for name, module in getattr(self.model, 'gw_encoders', {}).items():
+                    for p in module.parameters():
+                        p.requires_grad = False
+                for name, module in getattr(self.model, 'gw_decoders', {}).items():
+                    if name == 'syn':
+                        for p in module.parameters():
+                            p.requires_grad = True
+                    else:
+                        for p in module.parameters():
+                            p.requires_grad = False
+                # Recreate optimizer for current trainable params
+                trainable_params = [p for p in self.model.parameters() if p.requires_grad]
+                optimizer_config = self.config.training.get('optimizer', {'type': 'Adam', 'lr': 1e-3})
+                if optimizer_config['type'] == 'Adam':
+                    self.optimizer = optim.Adam(trainable_params, lr=optimizer_config.get('lr', 1e-3), weight_decay=optimizer_config.get('weight_decay', 0.0))
+                # Run finetune stage
+                finetune_cfg = dict(loss_config)
+                finetune_cfg['name'] = f"{loss_config['name']}_syn_only"
+                finetune_cfg['weights'] = loss_config['weights']
+                finetune_cfg['epochs'] = finetune_epochs
+                result = self.run_experiment(loss_config=finetune_cfg, log_to_wandb=self.config.experiment.get('log_to_wandb', True))
+                results.append(result)
+                # Unfreeze all for potential next experiments
+                for p in self.model.parameters():
+                    p.requires_grad = True
+            
+            if not two_stage:
+                # Run single-stage experiment as usual
+                result = self.run_experiment(
+                    loss_config=loss_config,
+                    log_to_wandb=self.config.experiment.get('log_to_wandb', True)
+                )
+                results.append(result)
+            
         # Save overall results
         results_file = Path(self.config.output_dir) / 'experiment_results.json'
         results_file.parent.mkdir(parents=True, exist_ok=True)
@@ -924,6 +983,10 @@ Example usage:
     parser.add_argument("--broadcast-n-layers", type=int, default=None, help="Number of layers for broadcast-only modules")
     parser.add_argument("--eval-use-broadcast-cycle", action="store_true", help="At eval, use broadcast-only modules for the cycle path")
     parser.add_argument("--syn-loss-type", type=str, default=None, choices=["ce", "mse"], help="Loss type for syn head: ce (default) or mse (regression)")
+    # Two-stage syn training controls
+    parser.add_argument("--syn-two-stage", action="store_true", help="Enable two-stage training: pretrain system (no syn), then train syn head only")
+    parser.add_argument("--syn-pretrain-epochs", type=int, default=None, help="Epochs for pretraining system without syn head")
+    parser.add_argument("--syn-finetune-epochs", type=int, default=None, help="Epochs for training syn head with system frozen")
     
     # New noise control: cycle-only noise injection (direct path clean)
     parser.add_argument("--cycle-noise-only", action="store_true", help="During training, inject noise only on the syn cycle path; direct path stays clean")
@@ -1029,6 +1092,18 @@ Example usage:
         config.synergy_config.setdefault('broadcast', {})
         config.synergy_config['broadcast']['eval_use_broadcast'] = True
         logger.info("Eval will use broadcast-only modules for cycle path")
+    if args.syn_two_stage:
+        config.synergy_config.setdefault('syn_two_stage', {})
+        config.synergy_config['syn_two_stage']['enabled'] = True
+        logger.info("Enable syn two-stage training: True")
+    if args.syn_pretrain_epochs is not None:
+        config.synergy_config.setdefault('syn_two_stage', {})
+        config.synergy_config['syn_two_stage']['pretrain_epochs'] = int(args.syn_pretrain_epochs)
+        logger.info(f"Override syn pretrain epochs: {args.syn_pretrain_epochs}")
+    if args.syn_finetune_epochs is not None:
+        config.synergy_config.setdefault('syn_two_stage', {})
+        config.synergy_config['syn_two_stage']['finetune_epochs'] = int(args.syn_finetune_epochs)
+        logger.info(f"Override syn finetune epochs: {args.syn_finetune_epochs}")
     
     # Set device
     device = None

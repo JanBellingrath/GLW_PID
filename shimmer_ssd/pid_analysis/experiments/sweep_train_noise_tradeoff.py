@@ -79,6 +79,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--broadcast-hidden-dim", type=int, default=None, help="Hidden dim for broadcast-only modules")
     parser.add_argument("--broadcast-n-layers", type=int, default=None, help="Number of layers for broadcast-only modules")
     parser.add_argument("--eval-use-broadcast-cycle", action="store_true", help="At eval, use broadcast-only modules for the cycle path")
+    # Two-stage syn training
+    parser.add_argument("--syn-two-stage", action="store_true", help="Enable two-stage training: pretrain system (no syn), then syn-only")
+    parser.add_argument("--syn-pretrain-epochs", type=int, default=None, help="Epochs for pretraining system without syn")
+    parser.add_argument("--syn-finetune-epochs", type=int, default=None, help="Epochs for syn-only finetune with system frozen")
     parser.add_argument("--cycle-noise-only", action="store_true", help="If set, run cycle-only noise only for all variants")
     return parser.parse_args()
 
@@ -149,6 +153,15 @@ def main():
             run_config.synergy_config['syn_cycle_ratio'] = ratio
         if args.syn_loss_type is not None:
             run_config.synergy_config['syn_loss_type'] = str(args.syn_loss_type)
+        if args.syn_two_stage:
+            run_config.synergy_config.setdefault('syn_two_stage', {})
+            run_config.synergy_config['syn_two_stage']['enabled'] = True
+        if args.syn_pretrain_epochs is not None:
+            run_config.synergy_config.setdefault('syn_two_stage', {})
+            run_config.synergy_config['syn_two_stage']['pretrain_epochs'] = int(args.syn_pretrain_epochs)
+        if args.syn_finetune_epochs is not None:
+            run_config.synergy_config.setdefault('syn_two_stage', {})
+            run_config.synergy_config['syn_two_stage']['finetune_epochs'] = int(args.syn_finetune_epochs)
         if args.use_broadcast_modules:
             run_config.synergy_config.setdefault('broadcast', {})
             run_config.synergy_config['broadcast']['use_separate_modules'] = True
@@ -197,6 +210,15 @@ def main():
                 var_config.synergy_config['attr_includes_synergy'] = False
             if args.syn_loss_type is not None:
                 var_config.synergy_config['syn_loss_type'] = str(args.syn_loss_type)
+            if args.syn_two_stage:
+                var_config.synergy_config.setdefault('syn_two_stage', {})
+                var_config.synergy_config['syn_two_stage']['enabled'] = True
+            if args.syn_pretrain_epochs is not None:
+                var_config.synergy_config.setdefault('syn_two_stage', {})
+                var_config.synergy_config['syn_two_stage']['pretrain_epochs'] = int(args.syn_pretrain_epochs)
+            if args.syn_finetune_epochs is not None:
+                var_config.synergy_config.setdefault('syn_two_stage', {})
+                var_config.synergy_config['syn_two_stage']['finetune_epochs'] = int(args.syn_finetune_epochs)
             if args.use_broadcast_modules:
                 var_config.synergy_config.setdefault('broadcast', {})
                 var_config.synergy_config['broadcast']['use_separate_modules'] = True

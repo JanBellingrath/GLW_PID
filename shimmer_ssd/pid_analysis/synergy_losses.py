@@ -640,7 +640,7 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
 
                     # Add external 'syn' head loss using attr target as label source.
                     # Supports two modes via synergy_config['syn_loss_type']: 'ce' (default) and 'mse'.
-                    if synergy_config.get('enable_syn_head', False) and 'attr' in synergy_targets:
+                    if synergy_config.get('enable_syn_head', False) and 'attr' in synergy_targets and synergy_config.get('syn_train_enabled', True):
                         try:
                             attr_target_full = synergy_targets['attr']
                             syn_loss_type = str(synergy_config.get('syn_loss_type', 'ce')).lower()
