@@ -99,7 +99,8 @@ class SynergyExperimentConfig:
         self.synergy_config.setdefault('noise', {})
         self.synergy_config['noise'].setdefault('train_std', 0.0)
         self.synergy_config['noise'].setdefault('eval_std', self.synergy_config['noise']['train_std'])
-        # Note: noise is always injected after model.fuse() which returns post-tanh latent
+        self.synergy_config['noise'].setdefault('site', 'post_fusion_pre_tanh')  # Default to pre-tanh noise injection
+        self.synergy_config['noise'].setdefault('cycle_noise_only', False)
         # Whether attr decoder includes synergy logits (legacy) or not
         self.synergy_config.setdefault('attr_includes_synergy', True)
         # External synergy head (third decoder) configuration
@@ -321,10 +322,11 @@ class SynergyTrainer:
             else:
                 n_bins = int(self.config.synergy_config.get('n_bins', 8))
                 syn_out_dim = n_synergy_features * n_bins
-            syn_n_layers = int(self.config.synergy_config.get('syn_head_n_layers', 3))
+            syn_n_layers = 2  # Hardcoded smaller syn decoder
+            syn_hidden_dim = 16  # Hardcoded smaller hidden dimension
             gw_decoders['syn'] = GWDecoder(
                 in_dim=self.config.workspace_dim,
-                hidden_dim=self.config.decoder_hidden_dim,
+                hidden_dim=syn_hidden_dim,
                 out_dim=syn_out_dim,
                 n_layers=syn_n_layers,
             )
@@ -911,7 +913,7 @@ Example usage:
     parser.add_argument("--disable-attr-synergy", action="store_true", help="Do not include synergy logits on attr decoder output")
     parser.add_argument("--train-noise-std", type=float, default=None, help="Std of Gaussian noise injected into post-fusion post-tanh latent during training")
     parser.add_argument("--eval-noise-std", type=float, default=None, help="Std of Gaussian noise injected during evaluation")
-    # Note: noise-site removed - noise always injected after model.fuse()
+    parser.add_argument("--noise-site", type=str, default=None, help="Noise injection site: post_fusion_pre_tanh or post_fusion_post_tanh")
     parser.add_argument("--synergy-bins", type=int, default=None, help="Number of discrete synergy bins (default: 8)")
     parser.add_argument("--syn-head-n-layers", type=int, default=None, help="Number of layers for syn decoder head (default: 3)")
     parser.add_argument("--syn-cycle-ratio", type=float, default=None, help="Weight for syn CE via broadcast-cycle (0..1), remainder on direct path (default: 0.5)")
@@ -922,6 +924,9 @@ Example usage:
     parser.add_argument("--broadcast-n-layers", type=int, default=None, help="Number of layers for broadcast-only modules")
     parser.add_argument("--eval-use-broadcast-cycle", action="store_true", help="At eval, use broadcast-only modules for the cycle path")
     parser.add_argument("--syn-loss-type", type=str, default=None, choices=["ce", "mse"], help="Loss type for syn head: ce (default) or mse (regression)")
+    
+    # New noise control: cycle-only noise injection (direct path clean)
+    parser.add_argument("--cycle-noise-only", action="store_true", help="During training, inject noise only on the syn cycle path; direct path stays clean")
     
     args = parser.parse_args()
     
@@ -982,7 +987,14 @@ Example usage:
         config.synergy_config.setdefault('noise', {})
         config.synergy_config['noise']['eval_std'] = float(args.eval_noise_std)
         logger.info(f"Override eval noise std: {args.eval_noise_std}")
-    # Note: noise-site removed - noise always injected after model.fuse()
+    if args.noise_site is not None:
+        config.synergy_config.setdefault('noise', {})
+        config.synergy_config['noise']['site'] = args.noise_site
+        logger.info(f"Override noise site: {args.noise_site}")
+    if args.cycle_noise_only:
+        config.synergy_config.setdefault('noise', {})
+        config.synergy_config['noise']['cycle_noise_only'] = True
+        logger.info("Enable training cycle-only noise injection: True")
     if args.synergy_bins is not None:
         config.synergy_config['n_bins'] = int(args.synergy_bins)
         logger.info(f"Override synergy bins: {args.synergy_bins}")

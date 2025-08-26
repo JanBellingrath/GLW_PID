@@ -79,6 +79,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--broadcast-hidden-dim", type=int, default=None, help="Hidden dim for broadcast-only modules")
     parser.add_argument("--broadcast-n-layers", type=int, default=None, help="Number of layers for broadcast-only modules")
     parser.add_argument("--eval-use-broadcast-cycle", action="store_true", help="At eval, use broadcast-only modules for the cycle path")
+    parser.add_argument("--cycle-noise-only", action="store_true", help="If set, run cycle-only noise only for all variants")
     return parser.parse_args()
 
 
@@ -164,6 +165,9 @@ def main():
         run_config.synergy_config.setdefault('noise', {})
         run_config.synergy_config['noise']['train_std'] = float(train_std)
         run_config.synergy_config['noise']['eval_std'] = float(train_std)
+        # Cycle-only noise flag
+        if hasattr(args, 'cycle_noise_only') and args.cycle_noise_only:
+            run_config.synergy_config['noise']['cycle_noise_only'] = True
         # Choose training variants
         variants: List[Dict[str, Any]]
         if args.syn_training_style == 'separate':
@@ -223,6 +227,8 @@ def main():
             var_config.synergy_config.setdefault('noise', {})
             var_config.synergy_config['noise']['train_std'] = float(train_std)
             var_config.synergy_config['noise']['eval_std'] = float(train_std)
+            if hasattr(args, 'cycle_noise_only') and args.cycle_noise_only:
+                var_config.synergy_config['noise']['cycle_noise_only'] = True
             # Output subdir includes variant
             run_output = base_output / f"sweep_trainstd_{train_std}" / f"style_{var['name']}"
             var_config.output_dir = str(run_output)

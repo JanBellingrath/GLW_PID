@@ -508,10 +508,13 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                     try:
                         noise_cfg = synergy_config.get('noise', {})
                         std = float(noise_cfg.get('train_std', 0.0) if model.training else noise_cfg.get('eval_std', noise_cfg.get('train_std', 0.0)))
-                        if std and std > 0.0:
+                        cycle_noise_only = bool(noise_cfg.get('cycle_noise_only', False))
+                        # Inject noise for direct path unless training with cycle_noise_only
+                        inject_direct_noise = (std and std > 0.0) and not (model.training and cycle_noise_only)
+                        if inject_direct_noise:
                             gw_state = gw_state + std * torch.randn_like(gw_state)
                             if _debug_state['synergy_loss_calls'] <= _DEBUG_MAX_CALLS:
-                                logger.info(f"  noise injected std={std}")
+                                logger.info(f"  noise injected std={std} (direct path)")
                     except Exception as e:
                         logger.warning(f"Noise injection skipped due to error: {e}")
                     # Decode
@@ -670,12 +673,24 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                                 # Broadcast-cycle path: decode base domains -> re-encode -> re-fuse -> syn decode
                                 syn_cycle = None
                                 try:
+                                    # If configured, add noise only for the cycle path during training
+                                    gw_for_cycle = gw_state
+                                    try:
+                                        noise_cfg = synergy_config.get('noise', {})
+                                        std = float(noise_cfg.get('train_std', 0.0))
+                                        cycle_noise_only = bool(noise_cfg.get('cycle_noise_only', False))
+                                        if model.training and cycle_noise_only and std and std > 0.0:
+                                            gw_for_cycle = gw_for_cycle + std * torch.randn_like(gw_for_cycle)
+                                            if _debug_state['synergy_loss_calls'] <= _DEBUG_MAX_CALLS:
+                                                logger.info(f"  cycle-only noise injected std={std}")
+                                    except Exception:
+                                        pass
                                     re_latents = {}
                                     if 'attr' in model.gw_decoders and 'attr' in model.gw_encoders:
-                                        attr_base = model.gw_decoders['attr'](gw_state)
+                                        attr_base = model.gw_decoders['attr'](gw_for_cycle)
                                         re_latents['attr'] = model.gw_encoders['attr'](attr_base)
                                     if 'v' in model.gw_decoders and 'v' in model.gw_encoders:
-                                        v_base = model.gw_decoders['v'](gw_state)
+                                        v_base = model.gw_decoders['v'](gw_for_cycle)
                                         re_latents['v'] = model.gw_encoders['v'](v_base)
                                     if re_latents:
                                         gw_state_refused = model.fuse(re_latents, selection_scores={})
@@ -726,12 +741,24 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
 
                                 syn_cycle = None
                                 try:
+                                    # If configured, add noise only for the cycle path during training
+                                    gw_for_cycle = gw_state
+                                    try:
+                                        noise_cfg = synergy_config.get('noise', {})
+                                        std = float(noise_cfg.get('train_std', 0.0))
+                                        cycle_noise_only = bool(noise_cfg.get('cycle_noise_only', False))
+                                        if model.training and cycle_noise_only and std and std > 0.0:
+                                            gw_for_cycle = gw_for_cycle + std * torch.randn_like(gw_for_cycle)
+                                            if _debug_state['synergy_loss_calls'] <= _DEBUG_MAX_CALLS:
+                                                logger.info(f"  cycle-only noise injected std={std}")
+                                    except Exception:
+                                        pass
                                     re_latents = {}
                                     if 'attr' in model.gw_decoders and 'attr' in model.gw_encoders:
-                                        attr_base = model.gw_decoders['attr'](gw_state)
+                                        attr_base = model.gw_decoders['attr'](gw_for_cycle)
                                         re_latents['attr'] = model.gw_encoders['attr'](attr_base)
                                     if 'v' in model.gw_decoders and 'v' in model.gw_encoders:
-                                        v_base = model.gw_decoders['v'](gw_state)
+                                        v_base = model.gw_decoders['v'](gw_for_cycle)
                                         re_latents['v'] = model.gw_encoders['v'](v_base)
                                     if re_latents:
                                         gw_state_refused = model.fuse(re_latents, selection_scores={})
@@ -878,7 +905,7 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                     if encoded_clean:
                         gw_clean = model.fuse(encoded_clean, selection_scores={}) # model.fuse already applies tanh
                         # Detach target to avoid gradients through target branch
-                        gw_target = gw_clean.detach()
+                        gw_target = gw_clean.detach() #TODO wait what
                         # 2) Inject training noise once to create noisy fused state (fuse already returned post-tanh)
                         gw_noisy = gw_clean
                         noise_cfg = synergy_config.get('noise', {})
