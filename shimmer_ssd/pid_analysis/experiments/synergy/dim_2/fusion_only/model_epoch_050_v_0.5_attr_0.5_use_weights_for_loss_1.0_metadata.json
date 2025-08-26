@@ -1,0 +1,43 @@
+{
+  "workspace_dim": 2,
+  "hidden_dim": 32,
+  "n_layers": 4,
+  "epoch": 50,
+  "train_loss": 0.7100877411225263,
+  "fusion_weights": {
+    "v": 0.5,
+    "attr": 0.5,
+    "use_weights_for_loss": true
+  },
+  "domain_names": [
+    "v",
+    "attr",
+    "use_weights_for_loss"
+  ],
+  "run_name": "fusion_only",
+  "timestamp": "2025-08-20_17-52-54",
+  "model_type": "GWModuleConfigurableFusion",
+  "epoch_time": 4.675798,
+  "trainable_params": 146404,
+  "total_params": 146404,
+  "use_weighted_loss": true,
+  "loss_weights": {
+    "fusion": 1.0,
+    "demi_cycle": 0.0,
+    "cycle": 0.0,
+    "translation": 0.0
+  },
+  "val_loss": 0.8299432247877121,
+  "val_fusion_v_non_synergy_loss": 0.6456372886896133,
+  "val_fusion_v_loss": 0.6456372886896133,
+  "val_fusion_attr_non_synergy_loss": 0.1922985389828682,
+  "val_fusion_attr_non_synergy_features_mse": 0.20723233744502068,
+  "val_fusion_attr_synergy_source_feature_mse": 0.04296045657247305,
+  "val_fusion_attr_synergy_loss": 0.16439012810587883,
+  "val_fusion_attr_synergy_loss_scaled": 0.8219506442546844,
+  "val_fusion_attr_loss": 1.0142492055892944,
+  "val_weighted_fusion_loss": 0.8299432247877121,
+  "val_fusion_loss": 0.8299432247877121,
+  "val_synergy_loss_scale": 5.0,
+  "val_total_loss": 0.8299432247877121
+}

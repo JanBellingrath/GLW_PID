@@ -1,0 +1,21 @@
+{
+  "experiment_name": "fusion_only",
+  "workspace_dim": 12,
+  "loss_weights": {
+    "fusion": 1.0,
+    "demi_cycle": 0.0,
+    "cycle": 0.0,
+    "translation": 0.0
+  },
+  "synergy_loss_scale": 1.0,
+  "metrics": {
+    "predictability/synergy_acc": 0.0,
+    "predictability/synergy_norm_ce": 0.0,
+    "predictability/attr_unique_r2": 0.06256916373968124,
+    "predictability/unique_r2": 0.15022125840187073,
+    "predictability/attr_redundant_r2": 0.2825157046318054,
+    "predictability/redundant_r2": 0.17799830436706543,
+    "predictability/v_unique_r2": 0.15022125840187073,
+    "predictability/v_redundant_r2": 0.17799830436706543
+  }
+}

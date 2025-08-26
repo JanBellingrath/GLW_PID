@@ -99,7 +99,7 @@ class SynergyExperimentConfig:
         self.synergy_config.setdefault('noise', {})
         self.synergy_config['noise'].setdefault('train_std', 0.0)
         self.synergy_config['noise'].setdefault('eval_std', self.synergy_config['noise']['train_std'])
-        self.synergy_config['noise'].setdefault('site', 'post_fusion_pre_tanh')  # Default to pre-tanh noise injection
+        # Note: noise is always injected after model.fuse() which returns post-tanh latent
         # Whether attr decoder includes synergy logits (legacy) or not
         self.synergy_config.setdefault('attr_includes_synergy', True)
         # External synergy head (third decoder) configuration
@@ -911,7 +911,7 @@ Example usage:
     parser.add_argument("--disable-attr-synergy", action="store_true", help="Do not include synergy logits on attr decoder output")
     parser.add_argument("--train-noise-std", type=float, default=None, help="Std of Gaussian noise injected into post-fusion post-tanh latent during training")
     parser.add_argument("--eval-noise-std", type=float, default=None, help="Std of Gaussian noise injected during evaluation")
-    parser.add_argument("--noise-site", type=str, default=None, help="Noise injection site identifier (default: post_fusion_post_tanh)")
+    # Note: noise-site removed - noise always injected after model.fuse()
     parser.add_argument("--synergy-bins", type=int, default=None, help="Number of discrete synergy bins (default: 8)")
     parser.add_argument("--syn-head-n-layers", type=int, default=None, help="Number of layers for syn decoder head (default: 3)")
     parser.add_argument("--syn-cycle-ratio", type=float, default=None, help="Weight for syn CE via broadcast-cycle (0..1), remainder on direct path (default: 0.5)")
@@ -982,10 +982,7 @@ Example usage:
         config.synergy_config.setdefault('noise', {})
         config.synergy_config['noise']['eval_std'] = float(args.eval_noise_std)
         logger.info(f"Override eval noise std: {args.eval_noise_std}")
-    if args.noise_site is not None:
-        config.synergy_config.setdefault('noise', {})
-        config.synergy_config['noise']['site'] = args.noise_site
-        logger.info(f"Override noise site: {args.noise_site}")
+    # Note: noise-site removed - noise always injected after model.fuse()
     if args.synergy_bins is not None:
         config.synergy_config['n_bins'] = int(args.synergy_bins)
         logger.info(f"Override synergy bins: {args.synergy_bins}")

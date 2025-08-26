@@ -1,0 +1,14 @@
+[
+  {
+    "experiment_name": "all_losses",
+    "loss_weights": {
+      "fusion": 0.3,
+      "demi_cycle": 0.2,
+      "cycle": 0.2,
+      "translation": 0.3
+    },
+    "best_epoch": 50,
+    "best_val_loss": 0.0,
+    "checkpoint_path": "experiments/synergy/all_losses/gw_model_attr_use_weights_for_loss_v_v_0.5_attr_0.5_use_weights_for_loss_1.0_ws32_20250818_110322.pt"
+  }
+]

@@ -1,0 +1,454 @@
+{
+  "dim_8_scale_1.0": {
+    "workspace_dim": 8,
+    "synergy_scale": 1.0,
+    "n_runs": 2,
+    "aggregated_metrics": {
+      "workspace_dim": {
+        "mean": 8.0,
+        "std": 0.0,
+        "n": 2,
+        "ci_lower": 8.0,
+        "ci_upper": 8.0,
+        "sem": 0.0,
+        "min": 8.0,
+        "max": 8.0,
+        "median": 8.0
+      },
+      "seed": {
+        "mean": 42.5,
+        "std": 0.7071067811865476,
+        "n": 2,
+        "ci_lower": 36.14689763178395,
+        "ci_upper": 48.85310236821605,
+        "sem": 0.5,
+        "min": 42.0,
+        "max": 43.0,
+        "median": 42.5
+      },
+      "run_id": {
+        "mean": 0.5,
+        "std": 0.7071067811865476,
+        "n": 2,
+        "ci_lower": -5.853102368216048,
+        "ci_upper": 6.853102368216048,
+        "sem": 0.5,
+        "min": 0.0,
+        "max": 1.0,
+        "median": 0.5
+      },
+      "best_val_loss": {
+        "mean": 0.0,
+        "std": 0.0,
+        "n": 2,
+        "ci_lower": 0.0,
+        "ci_upper": 0.0,
+        "sem": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "median": 0.0
+      },
+      "synergy_scale": {
+        "mean": 1.0,
+        "std": 0.0,
+        "n": 2,
+        "ci_lower": 1.0,
+        "ci_upper": 1.0,
+        "sem": 0.0,
+        "min": 1.0,
+        "max": 1.0,
+        "median": 1.0
+      },
+      "best_epoch": {
+        "mean": 10.0,
+        "std": 0.0,
+        "n": 2,
+        "ci_lower": 10.0,
+        "ci_upper": 10.0,
+        "sem": 0.0,
+        "min": 10.0,
+        "max": 10.0,
+        "median": 10.0
+      }
+    },
+    "individual_results": [
+      {
+        "experiment_name": "fusion_only",
+        "loss_weights": {
+          "fusion": 1.0,
+          "demi_cycle": 0.0,
+          "cycle": 0.0,
+          "translation": 0.0
+        },
+        "best_epoch": 10,
+        "best_val_loss": 0.0,
+        "checkpoint_path": "experiments/test_multi_sweep/individual_results/dim_8_scale_1.0_run_0/synergy_experiment/dim_8/fusion_only/gw_model_attr_use_weights_for_loss_v_v_0.5_attr_0.5_use_weights_for_loss_1.0_ws8_20250821_145504.pt",
+        "workspace_dim": 8,
+        "experiment_type": "fusion_only",
+        "seed": 42,
+        "synergy_scale": 1.0,
+        "run_id": 0,
+        "condition_id": "dim_8_scale_1.0_run_0",
+        "log_file": "experiments/test_multi_sweep/individual_results/dim_8_scale_1.0_run_0/dim_8_scale_1.0_run_0.log"
+      },
+      {
+        "experiment_name": "fusion_only",
+        "loss_weights": {
+          "fusion": 1.0,
+          "demi_cycle": 0.0,
+          "cycle": 0.0,
+          "translation": 0.0
+        },
+        "best_epoch": 10,
+        "best_val_loss": 0.0,
+        "checkpoint_path": "experiments/test_multi_sweep/individual_results/dim_8_scale_1.0_run_1/synergy_experiment/dim_8/fusion_only/gw_model_attr_use_weights_for_loss_v_v_0.5_attr_0.5_use_weights_for_loss_1.0_ws8_20250821_145620.pt",
+        "workspace_dim": 8,
+        "experiment_type": "fusion_only",
+        "seed": 43,
+        "synergy_scale": 1.0,
+        "run_id": 1,
+        "condition_id": "dim_8_scale_1.0_run_1",
+        "log_file": "experiments/test_multi_sweep/individual_results/dim_8_scale_1.0_run_1/dim_8_scale_1.0_run_1.log"
+      }
+    ]
+  },
+  "dim_8_scale_2.0": {
+    "workspace_dim": 8,
+    "synergy_scale": 2.0,
+    "n_runs": 2,
+    "aggregated_metrics": {
+      "workspace_dim": {
+        "mean": 8.0,
+        "std": 0.0,
+        "n": 2,
+        "ci_lower": 8.0,
+        "ci_upper": 8.0,
+        "sem": 0.0,
+        "min": 8.0,
+        "max": 8.0,
+        "median": 8.0
+      },
+      "seed": {
+        "mean": 42.5,
+        "std": 0.7071067811865476,
+        "n": 2,
+        "ci_lower": 36.14689763178395,
+        "ci_upper": 48.85310236821605,
+        "sem": 0.5,
+        "min": 42.0,
+        "max": 43.0,
+        "median": 42.5
+      },
+      "run_id": {
+        "mean": 0.5,
+        "std": 0.7071067811865476,
+        "n": 2,
+        "ci_lower": -5.853102368216048,
+        "ci_upper": 6.853102368216048,
+        "sem": 0.5,
+        "min": 0.0,
+        "max": 1.0,
+        "median": 0.5
+      },
+      "best_val_loss": {
+        "mean": 0.0,
+        "std": 0.0,
+        "n": 2,
+        "ci_lower": 0.0,
+        "ci_upper": 0.0,
+        "sem": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "median": 0.0
+      },
+      "synergy_scale": {
+        "mean": 2.0,
+        "std": 0.0,
+        "n": 2,
+        "ci_lower": 2.0,
+        "ci_upper": 2.0,
+        "sem": 0.0,
+        "min": 2.0,
+        "max": 2.0,
+        "median": 2.0
+      },
+      "best_epoch": {
+        "mean": 10.0,
+        "std": 0.0,
+        "n": 2,
+        "ci_lower": 10.0,
+        "ci_upper": 10.0,
+        "sem": 0.0,
+        "min": 10.0,
+        "max": 10.0,
+        "median": 10.0
+      }
+    },
+    "individual_results": [
+      {
+        "experiment_name": "fusion_only",
+        "loss_weights": {
+          "fusion": 1.0,
+          "demi_cycle": 0.0,
+          "cycle": 0.0,
+          "translation": 0.0
+        },
+        "best_epoch": 10,
+        "best_val_loss": 0.0,
+        "checkpoint_path": "experiments/test_multi_sweep/individual_results/dim_8_scale_2.0_run_0/synergy_experiment/dim_8/fusion_only/gw_model_attr_use_weights_for_loss_v_v_0.5_attr_0.5_use_weights_for_loss_1.0_ws8_20250821_145741.pt",
+        "workspace_dim": 8,
+        "experiment_type": "fusion_only",
+        "seed": 42,
+        "synergy_scale": 2.0,
+        "run_id": 0,
+        "condition_id": "dim_8_scale_2.0_run_0",
+        "log_file": "experiments/test_multi_sweep/individual_results/dim_8_scale_2.0_run_0/dim_8_scale_2.0_run_0.log"
+      },
+      {
+        "experiment_name": "fusion_only",
+        "loss_weights": {
+          "fusion": 1.0,
+          "demi_cycle": 0.0,
+          "cycle": 0.0,
+          "translation": 0.0
+        },
+        "best_epoch": 10,
+        "best_val_loss": 0.0,
+        "checkpoint_path": "experiments/test_multi_sweep/individual_results/dim_8_scale_2.0_run_1/synergy_experiment/dim_8/fusion_only/gw_model_attr_use_weights_for_loss_v_v_0.5_attr_0.5_use_weights_for_loss_1.0_ws8_20250821_145858.pt",
+        "workspace_dim": 8,
+        "experiment_type": "fusion_only",
+        "seed": 43,
+        "synergy_scale": 2.0,
+        "run_id": 1,
+        "condition_id": "dim_8_scale_2.0_run_1",
+        "log_file": "experiments/test_multi_sweep/individual_results/dim_8_scale_2.0_run_1/dim_8_scale_2.0_run_1.log"
+      }
+    ]
+  },
+  "dim_12_scale_1.0": {
+    "workspace_dim": 12,
+    "synergy_scale": 1.0,
+    "n_runs": 2,
+    "aggregated_metrics": {
+      "workspace_dim": {
+        "mean": 12.0,
+        "std": 0.0,
+        "n": 2,
+        "ci_lower": 12.0,
+        "ci_upper": 12.0,
+        "sem": 0.0,
+        "min": 12.0,
+        "max": 12.0,
+        "median": 12.0
+      },
+      "seed": {
+        "mean": 42.5,
+        "std": 0.7071067811865476,
+        "n": 2,
+        "ci_lower": 36.14689763178395,
+        "ci_upper": 48.85310236821605,
+        "sem": 0.5,
+        "min": 42.0,
+        "max": 43.0,
+        "median": 42.5
+      },
+      "run_id": {
+        "mean": 0.5,
+        "std": 0.7071067811865476,
+        "n": 2,
+        "ci_lower": -5.853102368216048,
+        "ci_upper": 6.853102368216048,
+        "sem": 0.5,
+        "min": 0.0,
+        "max": 1.0,
+        "median": 0.5
+      },
+      "best_val_loss": {
+        "mean": 0.0,
+        "std": 0.0,
+        "n": 2,
+        "ci_lower": 0.0,
+        "ci_upper": 0.0,
+        "sem": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "median": 0.0
+      },
+      "synergy_scale": {
+        "mean": 1.0,
+        "std": 0.0,
+        "n": 2,
+        "ci_lower": 1.0,
+        "ci_upper": 1.0,
+        "sem": 0.0,
+        "min": 1.0,
+        "max": 1.0,
+        "median": 1.0
+      },
+      "best_epoch": {
+        "mean": 10.0,
+        "std": 0.0,
+        "n": 2,
+        "ci_lower": 10.0,
+        "ci_upper": 10.0,
+        "sem": 0.0,
+        "min": 10.0,
+        "max": 10.0,
+        "median": 10.0
+      }
+    },
+    "individual_results": [
+      {
+        "experiment_name": "fusion_only",
+        "loss_weights": {
+          "fusion": 1.0,
+          "demi_cycle": 0.0,
+          "cycle": 0.0,
+          "translation": 0.0
+        },
+        "best_epoch": 10,
+        "best_val_loss": 0.0,
+        "checkpoint_path": "experiments/test_multi_sweep/individual_results/dim_12_scale_1.0_run_0/synergy_experiment/dim_12/fusion_only/gw_model_attr_use_weights_for_loss_v_v_0.5_attr_0.5_use_weights_for_loss_1.0_ws12_20250821_150014.pt",
+        "workspace_dim": 12,
+        "experiment_type": "fusion_only",
+        "seed": 42,
+        "synergy_scale": 1.0,
+        "run_id": 0,
+        "condition_id": "dim_12_scale_1.0_run_0",
+        "log_file": "experiments/test_multi_sweep/individual_results/dim_12_scale_1.0_run_0/dim_12_scale_1.0_run_0.log"
+      },
+      {
+        "experiment_name": "fusion_only",
+        "loss_weights": {
+          "fusion": 1.0,
+          "demi_cycle": 0.0,
+          "cycle": 0.0,
+          "translation": 0.0
+        },
+        "best_epoch": 10,
+        "best_val_loss": 0.0,
+        "checkpoint_path": "experiments/test_multi_sweep/individual_results/dim_12_scale_1.0_run_1/synergy_experiment/dim_12/fusion_only/gw_model_attr_use_weights_for_loss_v_v_0.5_attr_0.5_use_weights_for_loss_1.0_ws12_20250821_150138.pt",
+        "workspace_dim": 12,
+        "experiment_type": "fusion_only",
+        "seed": 43,
+        "synergy_scale": 1.0,
+        "run_id": 1,
+        "condition_id": "dim_12_scale_1.0_run_1",
+        "log_file": "experiments/test_multi_sweep/individual_results/dim_12_scale_1.0_run_1/dim_12_scale_1.0_run_1.log"
+      }
+    ]
+  },
+  "dim_12_scale_2.0": {
+    "workspace_dim": 12,
+    "synergy_scale": 2.0,
+    "n_runs": 2,
+    "aggregated_metrics": {
+      "workspace_dim": {
+        "mean": 12.0,
+        "std": 0.0,
+        "n": 2,
+        "ci_lower": 12.0,
+        "ci_upper": 12.0,
+        "sem": 0.0,
+        "min": 12.0,
+        "max": 12.0,
+        "median": 12.0
+      },
+      "seed": {
+        "mean": 42.5,
+        "std": 0.7071067811865476,
+        "n": 2,
+        "ci_lower": 36.14689763178395,
+        "ci_upper": 48.85310236821605,
+        "sem": 0.5,
+        "min": 42.0,
+        "max": 43.0,
+        "median": 42.5
+      },
+      "run_id": {
+        "mean": 0.5,
+        "std": 0.7071067811865476,
+        "n": 2,
+        "ci_lower": -5.853102368216048,
+        "ci_upper": 6.853102368216048,
+        "sem": 0.5,
+        "min": 0.0,
+        "max": 1.0,
+        "median": 0.5
+      },
+      "best_val_loss": {
+        "mean": 0.0,
+        "std": 0.0,
+        "n": 2,
+        "ci_lower": 0.0,
+        "ci_upper": 0.0,
+        "sem": 0.0,
+        "min": 0.0,
+        "max": 0.0,
+        "median": 0.0
+      },
+      "synergy_scale": {
+        "mean": 2.0,
+        "std": 0.0,
+        "n": 2,
+        "ci_lower": 2.0,
+        "ci_upper": 2.0,
+        "sem": 0.0,
+        "min": 2.0,
+        "max": 2.0,
+        "median": 2.0
+      },
+      "best_epoch": {
+        "mean": 10.0,
+        "std": 0.0,
+        "n": 2,
+        "ci_lower": 10.0,
+        "ci_upper": 10.0,
+        "sem": 0.0,
+        "min": 10.0,
+        "max": 10.0,
+        "median": 10.0
+      }
+    },
+    "individual_results": [
+      {
+        "experiment_name": "fusion_only",
+        "loss_weights": {
+          "fusion": 1.0,
+          "demi_cycle": 0.0,
+          "cycle": 0.0,
+          "translation": 0.0
+        },
+        "best_epoch": 10,
+        "best_val_loss": 0.0,
+        "checkpoint_path": "experiments/test_multi_sweep/individual_results/dim_12_scale_2.0_run_0/synergy_experiment/dim_12/fusion_only/gw_model_attr_use_weights_for_loss_v_v_0.5_attr_0.5_use_weights_for_loss_1.0_ws12_20250821_150259.pt",
+        "workspace_dim": 12,
+        "experiment_type": "fusion_only",
+        "seed": 42,
+        "synergy_scale": 2.0,
+        "run_id": 0,
+        "condition_id": "dim_12_scale_2.0_run_0",
+        "log_file": "experiments/test_multi_sweep/individual_results/dim_12_scale_2.0_run_0/dim_12_scale_2.0_run_0.log"
+      },
+      {
+        "experiment_name": "fusion_only",
+        "loss_weights": {
+          "fusion": 1.0,
+          "demi_cycle": 0.0,
+          "cycle": 0.0,
+          "translation": 0.0
+        },
+        "best_epoch": 10,
+        "best_val_loss": 0.0,
+        "checkpoint_path": "experiments/test_multi_sweep/individual_results/dim_12_scale_2.0_run_1/synergy_experiment/dim_12/fusion_only/gw_model_attr_use_weights_for_loss_v_v_0.5_attr_0.5_use_weights_for_loss_1.0_ws12_20250821_150418.pt",
+        "workspace_dim": 12,
+        "experiment_type": "fusion_only",
+        "seed": 43,
+        "synergy_scale": 2.0,
+        "run_id": 1,
+        "condition_id": "dim_12_scale_2.0_run_1",
+        "log_file": "experiments/test_multi_sweep/individual_results/dim_12_scale_2.0_run_1/dim_12_scale_2.0_run_1.log"
+      }
+    ]
+  }
+}

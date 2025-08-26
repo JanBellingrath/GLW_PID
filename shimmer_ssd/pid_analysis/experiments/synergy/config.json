@@ -2,7 +2,7 @@
   "data": {
     "dir": "../../../simple_shapes_xor_targets",
     "image_dir": "/home/janerik/shimmer-ssd/simple_shapes_dataset",
-    "batch_size": 1024,
+    "batch_size": 15000,
     "num_workers": 0
   },
   "model": {
@@ -18,8 +18,9 @@
         "checkpoint_path": "/home/janerik/GLW_PID/shimmer-ssd/checkpoints/domain_attr.ckpt"
       }
     ],
-    "workspace_dim": 12,
+    "workspace_dim": 32,
     "hidden_dim": 32,
+    "decoder_hidden_dim": 128,
     "n_layers": 4,
     "fusion_weights": {
       "v": 0.5,
@@ -36,7 +37,7 @@
         11
       ]
     },
-    "loss_scale": 2000.0
+    "loss_scale": 100.0
   },
   "training": {
     "epochs": 50,

@@ -54,7 +54,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--disable-attr-synergy", action="store_true")
     parser.add_argument("--train-noise-std", type=float, default=None)
     parser.add_argument("--eval-noise-std", type=float, default=None)
-    parser.add_argument("--noise-site", type=str, default=None)
+    # Note: noise-site removed - noise always injected after model.fuse()
     parser.add_argument("--synergy-bins", type=int, default=None)
     parser.add_argument("--syn-head-n-layers", type=int, default=None)
     parser.add_argument("--syn-loss-type", type=str, default=None, choices=["ce", "mse"], help="Loss type for syn head: ce or mse")
@@ -77,10 +77,8 @@ def apply_overrides(config: SynergyExperimentConfig, args: argparse.Namespace) -
         config.synergy_config['enable_syn_head'] = True
     if args.disable_attr_synergy:
         config.synergy_config['attr_includes_synergy'] = False
-    # Noise site/std overrides
+    # Noise std overrides (noise always injected after model.fuse())
     noise = config.synergy_config.setdefault('noise', {})
-    if args.noise_site is not None:
-        noise['site'] = args.noise_site
     if args.train_noise_std is not None:
         noise['train_std'] = float(args.train_noise_std)
     if args.eval_noise_std is not None:
@@ -120,8 +118,6 @@ def apply_overrides(config: SynergyExperimentConfig, args: argparse.Namespace) -
 def evaluate_tradeoff(trainer: SynergyTrainer, eval_noise_stds: List[float], path_mode: str = 'both') -> Dict[str, Any]:
     model = trainer.model
     device = trainer.device
-    noise_cfg = trainer.config.synergy_config.get('noise', {})
-    site = noise_cfg.get('site', 'post_fusion_post_tanh')
     n_bins = int(trainer.config.synergy_config.get('n_bins', 8))
     syn_loss_type = str(trainer.config.synergy_config.get('syn_loss_type', 'ce')).lower()
 
@@ -134,8 +130,7 @@ def evaluate_tradeoff(trainer: SynergyTrainer, eval_noise_stds: List[float], pat
     model.eval()
 
     def inject_noise(gw_state: torch.Tensor, std: float) -> torch.Tensor:
-        if 'post_tanh' in str(site):
-            gw_state = torch.tanh(gw_state)
+        # model.fuse() already returns post-tanh latent, just inject noise uniformly
         if std and std > 0.0:
             gw_state = gw_state + std * torch.randn_like(gw_state)
         return gw_state

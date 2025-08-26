@@ -1,0 +1,159 @@
+{
+  "data": {
+    "dir": "../../../simple_shapes_xor_targets",
+    "image_dir": "/home/janerik/shimmer-ssd/simple_shapes_dataset",
+    "batch_size": 15000,
+    "num_workers": 0
+  },
+  "model": {
+    "domains": [
+      {
+        "name": "v",
+        "domain_type": "v_latents",
+        "checkpoint_path": "/home/janerik/GLW_PID/shimmer-ssd/checkpoints/domain_v.ckpt"
+      },
+      {
+        "name": "attr",
+        "domain_type": "attr",
+        "checkpoint_path": "/home/janerik/GLW_PID/shimmer-ssd/checkpoints/domain_attr.ckpt"
+      }
+    ],
+    "workspace_dim": 12,
+    "hidden_dim": 32,
+    "decoder_hidden_dim": 32,
+    "n_layers": 4,
+    "fusion_weights": {
+      "v": 0.5,
+      "attr": 0.5
+    }
+  },
+  "synergy": {
+    "domains": [
+      "v",
+      "attr"
+    ],
+    "feature_indices": {
+      "attr": [
+        11
+      ]
+    },
+    "unique_indices": {
+      "attr": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ],
+      "v": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      ]
+    },
+    "redundant_indices": {
+      "attr": [
+        5,
+        6,
+        7,
+        8,
+        9,
+        10
+      ],
+      "v": [
+        7,
+        8,
+        9,
+        10,
+        11,
+        12
+      ]
+    },
+    "loss_scale": 1.0
+  },
+  "training": {
+    "epochs": 10,
+    "optimizer": {
+      "type": "Adam",
+      "lr": 0.001,
+      "weight_decay": 1e-05
+    },
+    "scheduler": {
+      "type": "StepLR",
+      "step_size": 20,
+      "gamma": 0.5
+    },
+    "loss_configs": [
+      {
+        "name": "fusion_only",
+        "description": "Test cross-modal synergy learning via fusion loss",
+        "weights": {
+          "fusion": 1.0,
+          "demi_cycle": 0.0,
+          "cycle": 0.0,
+          "translation": 0.0
+        }
+      },
+      {
+        "name": "demi_cycle_only",
+        "description": "Test within-domain consistency learning",
+        "weights": {
+          "fusion": 0.0,
+          "demi_cycle": 1.0,
+          "cycle": 0.0,
+          "translation": 0.0
+        }
+      },
+      {
+        "name": "cycle_only",
+        "description": "Test cross-modal round-trip consistency",
+        "weights": {
+          "fusion": 0.0,
+          "demi_cycle": 0.0,
+          "cycle": 1.0,
+          "translation": 0.0
+        }
+      },
+      {
+        "name": "translation_only",
+        "description": "Test cross-modal supervised translation learning",
+        "weights": {
+          "fusion": 0.0,
+          "demi_cycle": 0.0,
+          "cycle": 0.0,
+          "translation": 1.0
+        }
+      },
+      {
+        "name": "fusion_translation",
+        "description": "Combine fusion and translation losses",
+        "weights": {
+          "fusion": 0.5,
+          "demi_cycle": 0.0,
+          "cycle": 0.0,
+          "translation": 0.5
+        }
+      },
+      {
+        "name": "all_losses",
+        "description": "Combined training with all loss types including translation",
+        "weights": {
+          "fusion": 0.3,
+          "demi_cycle": 0.2,
+          "cycle": 0.2,
+          "translation": 0.3
+        }
+      }
+    ],
+    "reset_model_per_experiment": true
+  },
+  "experiment": {
+    "output_dir": "experiments/test_multi_sweep/individual_results/dim_12_scale_1.0_run_1/synergy_experiment/dim_12",
+    "wandb_project": "lowdim-synergy-sweep",
+    "wandb_entity": null
+  }
+}

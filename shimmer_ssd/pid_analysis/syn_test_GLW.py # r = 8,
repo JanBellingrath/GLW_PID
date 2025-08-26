@@ -1,0 +1,3 @@
+python two_branch_add_mod_r.py              # r = 8, default widths
+python two_branch_add_mod_r.py --mod 16     # harder, 4-bit sum
+python two_branch_add_mod_r.py --opwidth 32 --decwidth 32

@@ -502,19 +502,16 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                                 encoded[domain_name] = model.gw_encoders[domain_name](domain_input)
                 
                 if encoded:
-                    # Fuse
-                    gw_state = model.fuse(encoded, selection_scores={}) #TODO I think there might be a massive error here, fuse already applies tanh
-                    # Optional post-tanh + noise injection
+                    # Fuse (returns post-tanh latent)
+                    gw_state = model.fuse(encoded, selection_scores={})
+                    # Inject noise uniformly after fusion
                     try:
                         noise_cfg = synergy_config.get('noise', {})
-                        site = noise_cfg.get('site', 'post_fusion_post_tanh')
-                        if 'post_tanh' in str(site):
-                            gw_state = torch.tanh(gw_state)
                         std = float(noise_cfg.get('train_std', 0.0) if model.training else noise_cfg.get('eval_std', noise_cfg.get('train_std', 0.0)))
                         if std and std > 0.0:
                             gw_state = gw_state + std * torch.randn_like(gw_state)
                             if _debug_state['synergy_loss_calls'] <= _DEBUG_MAX_CALLS:
-                                logger.info(f"  noise injected at site={site} std={std}")
+                                logger.info(f"  noise injected std={std}")
                     except Exception as e:
                         logger.warning(f"Noise injection skipped due to error: {e}")
                     # Decode
@@ -675,18 +672,18 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                                 try:
                                     use_broadcast = bool(getattr(model, 'broadcast_gw_decoders', None) is not None and synergy_config.get('broadcast', {}).get('use_separate_modules', False))
                                     if use_broadcast:
-                                        with torch.no_grad():
-                                            re_latents = {}
-                                            if 'attr' in model.broadcast_gw_decoders and 'attr' in model.broadcast_gw_encoders:
-                                                attr_base = model.broadcast_gw_decoders['attr'](gw_state)
-                                                re_latents['attr'] = model.broadcast_gw_encoders['attr'](attr_base)
-                                            if 'v' in model.broadcast_gw_decoders and 'v' in model.broadcast_gw_encoders:
-                                                v_base = model.broadcast_gw_decoders['v'](gw_state)
-                                                re_latents['v'] = model.broadcast_gw_encoders['v'](v_base)
-                                            if re_latents:
-                                                gw_state_refused = model.fuse(re_latents, selection_scores={})
-                                                syn_logits_cycle = model.gw_decoders['syn'](gw_state_refused)
-                                                syn_cycle = ce_from_logits(syn_logits_cycle)
+                                        re_latents = {}
+                                        if 'attr' in model.broadcast_gw_decoders and 'attr' in model.broadcast_gw_encoders:
+                                            attr_base = model.broadcast_gw_decoders['attr'](gw_state)
+                                            re_latents['attr'] = model.broadcast_gw_encoders['attr'](attr_base)
+                                        if 'v' in model.broadcast_gw_decoders and 'v' in model.broadcast_gw_encoders:
+                                            v_base = model.broadcast_gw_decoders['v'](gw_state)
+                                            re_latents['v'] = model.broadcast_gw_encoders['v'](v_base)
+                                        if re_latents:
+                                            gw_state_refused = model.fuse(re_latents, selection_scores={})
+                                            syn_logits_cycle = model.gw_decoders['syn'](gw_state_refused)
+                                            syn_cycle = ce_from_logits(syn_logits_cycle)
+                                            
                                     else:
                                         re_latents = {}
                                         if 'attr' in model.gw_decoders and 'attr' in model.gw_encoders:
@@ -746,18 +743,17 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                                 try:
                                     use_broadcast = bool(getattr(model, 'broadcast_gw_decoders', None) is not None and synergy_config.get('broadcast', {}).get('use_separate_modules', False))
                                     if use_broadcast:
-                                        with torch.no_grad():
-                                            re_latents = {}
-                                            if 'attr' in model.broadcast_gw_decoders and 'attr' in model.broadcast_gw_encoders:
-                                                attr_base = model.broadcast_gw_decoders['attr'](gw_state)
-                                                re_latents['attr'] = model.broadcast_gw_encoders['attr'](attr_base)
-                                            if 'v' in model.broadcast_gw_decoders and 'v' in model.broadcast_gw_encoders:
-                                                v_base = model.broadcast_gw_decoders['v'](gw_state)
-                                                re_latents['v'] = model.broadcast_gw_encoders['v'](v_base)
-                                            if re_latents:
-                                                gw_state_refused = model.fuse(re_latents, selection_scores={})
-                                                syn_logits_cycle = model.gw_decoders['syn'](gw_state_refused)
-                                                syn_cycle = mse_from_logits(syn_logits_cycle)
+                                        re_latents = {}
+                                        if 'attr' in model.broadcast_gw_decoders and 'attr' in model.broadcast_gw_encoders:
+                                            attr_base = model.broadcast_gw_decoders['attr'](gw_state)
+                                            re_latents['attr'] = model.broadcast_gw_encoders['attr'](attr_base)
+                                        if 'v' in model.broadcast_gw_decoders and 'v' in model.broadcast_gw_encoders:
+                                            v_base = model.broadcast_gw_decoders['v'](gw_state)
+                                            re_latents['v'] = model.broadcast_gw_encoders['v'](v_base)
+                                        if re_latents:
+                                            gw_state_refused = model.fuse(re_latents, selection_scores={})
+                                            syn_logits_cycle = model.gw_decoders['syn'](gw_state_refused)
+                                            syn_cycle = mse_from_logits(syn_logits_cycle)
                                     else:
                                         re_latents = {}
                                         if 'attr' in model.gw_decoders and 'attr' in model.gw_encoders:
@@ -809,39 +805,7 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                         loss_details['synergy_loss_scale'] = synergy_loss_scale
                         total_loss = weighted_fusion_loss
             
-            # Helper to temporarily monkey-patch model.fuse to inject noise post-fusion (single injection only)
-            def _monkey_patch_fuse_with_noise(model, synergy_config, site='post_fusion_pre_tanh'):
-                original_fuse = getattr(model, 'fuse', None)
-                if original_fuse is None:
-                    return None
-                noise_cfg = synergy_config.get('noise', {})
-                site = noise_cfg.get('site', site)  # Use the site parameter, defaulting to pre-tanh
-                train_std = float(noise_cfg.get('train_std', 0.0))
-
-                def noisy_fuse_after_tanh(encoded, selection_scores=None):
-                    gw_state_inner = original_fuse(encoded, selection_scores)
-                    if train_std and train_std > 0.0:
-                        gw_state_inner = gw_state_inner + train_std * torch.randn_like(gw_state_inner)
-                    return gw_state_inner
-
-                def noisy_fuse_before_tanh(encoded, selection_scores=None, site='post_fusion_pre_tanh'): #TODO might want to check this function again if persistent problems
-                    weighted_sum = torch.zeros_like(list(encoded.values())[0])
-                    for domain, representation in encoded.items():
-                        if domain in model.fusion_weights:
-                            weight = model.fusion_weights[domain]
-                            weighted_sum += weight * representation
-                    if train_std and train_std > 0.0:
-                        weighted_sum = weighted_sum + train_std * torch.randn_like(weighted_sum)
-                    return model.fusion_activation_fn(weighted_sum)
-
-                if site == 'post_fusion_post_tanh':
-                    model.fuse = noisy_fuse_after_tanh
-                elif site == 'post_fusion_pre_tanh':
-                    model.fuse = noisy_fuse_before_tanh
-                else:
-                    raise ValueError(f"Invalid site: {site}")
-
-                return original_fuse
+            # Note: We no longer monkey-patch fuse since we inject noise consistently after model.fuse()
 
             # 2. Demi-cycle and cycle losses - ignore synergy features entirely
             # Use original functions but only compare base dimensions for attr domain
@@ -884,14 +848,11 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                 if demi_style == 'encode_decode':
                     from losses_and_weights_GLW_training import calculate_demi_cycle_loss
                     original_attr_decoder = _monkey_patch_attr_decoder_for_base_only(model, synergy_config)
-                    original_fuse = _monkey_patch_fuse_with_noise(model, synergy_config)
                     try:
                         demi_loss, demi_details = calculate_demi_cycle_loss(model, batch, criterion)
                     finally:
                         if original_attr_decoder is not None:
                             model.gw_decoders['attr'] = original_attr_decoder
-                        if original_fuse is not None:
-                            model.fuse = original_fuse
                 else:
                     # decode_encode denoising: compare clean fused state vs cycle after decoding/encoding with noise injected once at clean fused state
                     # 1) Build clean fused state (no noise)
@@ -912,13 +873,9 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                         gw_clean = model.fuse(encoded_clean, selection_scores={})
                         # Detach target to avoid gradients through target branch
                         gw_target = gw_clean.detach()
-                        # 2) Inject training noise once to create noisy fused state
+                        # 2) Inject training noise once to create noisy fused state (fuse already returns post-tanh)
+                        gw_noisy = gw_clean
                         noise_cfg = synergy_config.get('noise', {})
-                        site = noise_cfg.get('site', 'post_fusion_post_tanh')
-                        if 'post_tanh' in str(site):
-                            gw_noisy = torch.tanh(gw_clean)
-                        else:
-                            gw_noisy = gw_clean
                         std = float(noise_cfg.get('train_std', 0.0))
                         if std and std > 0.0:
                             gw_noisy = gw_noisy + std * torch.randn_like(gw_noisy)
@@ -962,7 +919,6 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
             if cycle_w > 0:
                 from losses_and_weights_GLW_training import calculate_cycle_loss
                 original_attr_decoder = _monkey_patch_attr_decoder_for_base_only(model, synergy_config)
-                original_fuse = _monkey_patch_fuse_with_noise(model, synergy_config)
                 
                 try:
                     cycle_loss, cycle_details = calculate_cycle_loss(model, batch, criterion)
@@ -970,9 +926,6 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                     # Restore original decoder
                     if original_attr_decoder is not None:
                         model.gw_decoders['attr'] = original_attr_decoder
-                    # Restore original fuse
-                    if original_fuse is not None:
-                        model.fuse = original_fuse
                 
                 loss_details.update(cycle_details)
                 
@@ -990,17 +943,11 @@ def create_synergy_loss_function(synergy_config: Dict[str, Any]):
                 from losses_and_weights_GLW_training import calculate_translation_loss, detect_paired_samples
                 # Detect paired samples for translation loss
                 paired_mask = detect_paired_samples(batch, synergy_targets=synergy_targets)
-                # Inject noise in fuse for translation computations
-                original_fuse = _monkey_patch_fuse_with_noise(model, synergy_config)
-                try:
-                    # Use existing translation loss - it already handles synergy_config masking
-                    translation_loss, translation_details = calculate_translation_loss(
-                        model, batch, criterion, synergy_targets=synergy_targets, 
-                        paired_mask=paired_mask, synergy_config=synergy_config
-                    )
-                finally:
-                    if original_fuse is not None:
-                        model.fuse = original_fuse
+                # Use existing translation loss - it already handles synergy_config masking
+                translation_loss, translation_details = calculate_translation_loss(
+                    model, batch, criterion, synergy_targets=synergy_targets, 
+                    paired_mask=paired_mask, synergy_config=synergy_config
+                )
                 loss_details.update(translation_details)
                 
                 weighted_translation_loss = transl_w * translation_loss

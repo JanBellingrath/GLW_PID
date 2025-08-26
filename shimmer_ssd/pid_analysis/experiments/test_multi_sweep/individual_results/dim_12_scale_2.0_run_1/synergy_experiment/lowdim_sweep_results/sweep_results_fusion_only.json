@@ -1,0 +1,17 @@
+[
+  {
+    "experiment_name": "fusion_only",
+    "loss_weights": {
+      "fusion": 1.0,
+      "demi_cycle": 0.0,
+      "cycle": 0.0,
+      "translation": 0.0
+    },
+    "best_epoch": 10,
+    "best_val_loss": 0.0,
+    "checkpoint_path": "experiments/test_multi_sweep/individual_results/dim_12_scale_2.0_run_1/synergy_experiment/dim_12/fusion_only/gw_model_attr_use_weights_for_loss_v_v_0.5_attr_0.5_use_weights_for_loss_1.0_ws12_20250821_150418.pt",
+    "workspace_dim": 12,
+    "experiment_type": "fusion_only",
+    "seed": 43
+  }
+]
