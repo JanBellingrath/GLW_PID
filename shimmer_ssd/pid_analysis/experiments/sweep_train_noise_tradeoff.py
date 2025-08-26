@@ -336,7 +336,6 @@ def main():
                 title = f"eval curves (MSE) train_std={train_std}, {var['name']}"
                 out_png = run_output / 'tradeoff_plot.png'
                 # Reuse plotting but y-label will still say accuracy; create a local variant
-                import matplotlib.pyplot as plt
                 plt.figure(figsize=(6, 4))
                 plt.plot(xs, direct, label='direct MSE', marker='o')
                 plt.plot(xs, cycle, label='cycle MSE', marker='o')
